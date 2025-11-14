@@ -642,4 +642,4 @@ if __name__ == "__main__":
     helper = Scheduler(slots_file, departments[list(departments.keys())[0]], rooms_file, global_room_usage)
     helper.courses = combined_courses
     helper.records = all_records
-    print("\nAll done. Student timetables and combined faculty timetable generated.")
+    print("\nAll done. Student timetables generated.")
