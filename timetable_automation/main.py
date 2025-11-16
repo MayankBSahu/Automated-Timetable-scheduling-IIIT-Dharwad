@@ -1,15 +1,3 @@
-# Automated Timetable Scheduler (Cleaned & Documented Version)
-# ------------------------------------------------------------
-# This scheduler generates academic timetables with deterministic behavior
-# while respecting all course constraints (L/T/P hours, faculty availability,
-# lab restrictions, room conflicts, elective baskets, and excluded time slots).
-#
-# Components:
-# - Course: small container for course attributes
-# - Scheduler: builds timetables, assigns rooms, handles electives, formats Excel
-# - Deterministic behavior is ensured by a fixed numeric seed and stable hashing.
-#
-# Note: Data file names, CSV layout expectations, and overall scheduling logic are preserved.
 
 import os
 import math
@@ -19,8 +7,6 @@ import hashlib
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Border, Side, PatternFill
 
-# --------------------- Configuration ---------------------
-# Simple numeric seed for determinism (user-requested)
 Random_SEED = 314156
 random.seed(Random_SEED)
 
