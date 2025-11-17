@@ -1,109 +1,77 @@
-# Automated Timetable Scheduling – IIIT Dharwad
+A constraint-aware, reproducible timetable generator for IIIT Dharwad that builds clash-free schedules from CSV/JSON inputs and serves an optional web app for browsing, filtering, and printing timetables. The system models real academic entities and constraints, supports heuristic/metaheuristic solvers, and exports both machine-readable and human-friendly outputs.[1]
 
-A constraint-aware system to generate clash-free academic timetables for IIIT Dharwad with reproducible outputs and an optional web interface for viewing and sharing.
+### Highlights
+- Clash-free across instructors, rooms, sections, and slots with hard/soft constraint handling and tunable weights.[1]
+- Deterministic runs via seed control; exports CSV/JSON and HTML; optional Flask/Django web viewer.[1]
+- Pluggable solving strategies: constructive + repair, GA, SA, Tabu; configurable limits and weights.[1]
 
-## Features
-
-- Clash-free schedules across instructors, rooms, sections, and timeslots with hard/soft constraint handling.  
-- CSV/JSON input and export; human-readable HTML views for easy review.  
-- Pluggable solving core (heuristics/metaheuristics) with tunable weights and seeds.  
-- Optional lightweight web app to browse, filter, and print weekly/daily timetables.
-
-## Table of Contents
-
-- About  
-- Problem Model  
-- Project Structure  
-- Quick Start  
-- Web App (Optional)  
-- Data Formats  
-- Algorithms  
-- Configuration  
-- Testing  
-- Roadmap  
-- Contributing  
-- License
+## Table of contents
+- About[1]
+- Problem model[1]
+- Project structure[1]
+- Quick start[1]
+- Web app[1]
+- Data formats[1]
+- Algorithms[1]
+- Configuration[1]
+- Testing[1]
+- Roadmap[1]
+- Contributing[1]
+- License[1]
 
 ## About
+This project formulates institute timetabling as a combinatorial optimization problem with explicit hard and soft constraints tailored for departmental scale deployment at IIIT Dharwad. It ingests institute data, enforces feasibility, optimizes preferences, and publishes timetables for review and distribution.[1]
 
-This project automates institute timetable creation by modeling scheduling as a combinatorial optimization problem with real-world academic constraints. It supports departmental scale inputs and exports final schedules for publishing.
+## Problem model
+- Entities: Departments, Courses, Sections/Batches, Instructors, Rooms/Labs, Timeslots (Mon–Fri).[1]
+- Hard constraints:
+  - No overlaps for instructor/room/section.[1]
+  - Room capacity/type match; labs need contiguous multi-slot blocks.[1]
+  - Fixed slots and mandatory assignments honored.[1]
+- Soft constraints:
+  - Instructor preferred slots and balanced daily/weekly load.[1]
+  - Avoid extreme early/late slots and long idle gaps.[1]
 
-## Problem Model
-
-- Entities: Departments, Courses, Sections/Batches, Instructors, Rooms/Labs, Timeslots (Mon–Fri periods).  
-- Hard constraints:  
-  - No instructor/room/section overlaps.  
-  - Room capacity/type must match (e.g., lab vs lecture).  
-  - Labs require contiguous multi-slot blocks.  
-  - Fixed/mandatory slots must be honored.  
-- Soft constraints:  
-  - Instructor preferred slots.  
-  - Balanced daily load and spread across the week.  
-  - Avoid extreme late/early slots and long idle gaps.
-
-## Project Structure
-
+## Project structure
 ```
 .
-├── data/           # CSV/JSON inputs for courses, instructors, rooms, sections, constraints
-├── src/            # Scheduler core, fitness/constraints, CLI entrypoints
-├── web/            # Optional Flask/Django app to visualize timetables
-├── outputs/        # Generated CSV/JSON and HTML reports
-├── scripts/        # Validation and batch-run utilities
+├── data/          # CSV/JSON inputs (courses, instructors, rooms, sections, constraints)
+├── src/           # Core scheduler, constraints/fitness, solver strategies, CLI
+├── web/           # Optional Flask/Django app to visualize and filter timetables
+├── outputs/       # Generated CSV/JSON and HTML reports
+├── scripts/       # Validation and batch-run utilities
 └── requirements.txt
 ```
 
-## Quick Start
+## Quick start
+- Environment
+  - python -m venv .venv; activate; pip install -r requirements.txt.[1]
+- Prepare data
+  - Place input CSV/JSON in data/ and adjust constraints.json to institute rules.[1]
+- Run scheduler
+  - python src/run_scheduler.py --input data --out outputs --seed 42.[1]
+- Review results
+  - Outputs include machine-readable CSV/JSON and optional HTML views.[1]
 
-1) Set up environment
-```
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# Linux/macOS:
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-2) Prepare data  
-Place your input files in data/ (see “Data Formats” below). Adjust constraints.json to reflect institute rules.
-
-3) Run scheduler
-```
-python src/run_scheduler.py --input data --out outputs --seed 42
-```
-
-4) Review results  
-Generated CSV/JSON and optional HTML views will appear in outputs/.
-
-## Web App (Optional)
-
-Start the web server to preview and filter timetables by department, semester, instructor, and room.
+## Web app
+Start the server and browse http://localhost:5000 to filter by department, semester, instructor, and room, with weekly/daily views and print-friendly exports.[1]
 
 ```
 python web/app.py
-# then open http://localhost:5000
 ```
+- Features:
+  - Weekly/daily views with search and filters.[1]
+  - Export/print pages for publishing.[1]
 
-Features:
-- Weekly/daily views.  
-- Filters and search.  
-- Export/print-friendly pages.
+## Data formats
+- courses.csv: course_id, name, dept, hours_per_week, is_lab.[1]
+- instructors.csv: instructor_id, name, dept, qualified_courses, preferred_slots.[1]
+- rooms.csv: room_id, name, capacity, type (LECTURE/LAB), allowed_depts.[1]
+- sections.csv: section_id, program, semester, size, required_courses.[1]
+- constraints.json: hard_rules, soft_rules, fixed_assignments, weights.[1]
 
-## Data Formats
-
-- courses.csv  
-  - course_id, name, dept, hours_per_week, is_lab  
-- instructors.csv  
-  - instructor_id, name, dept, qualified_courses, preferred_slots  
-- rooms.csv  
-  - room_id, name, capacity, type (LECTURE/LAB), allowed_depts  
-- sections.csv  
-  - section_id, program, semester, size, required_courses  
-- constraints.json  
-  - hard_rules, soft_rules, fixed_assignments, weights
-
-Example constraints.json (minimal):
-```json
+Example constraints.json (minimal):[1]
+```
 {
   "hard": {
     "no_overlaps": true,
@@ -126,25 +94,23 @@ Example constraints.json (minimal):
 ```
 
 ## Algorithms
-
-- Initialization creates feasible or near-feasible candidate schedules.  
-- Fitness function scores violations of hard and soft constraints with configurable weights.  
-- Search methods can be chosen or combined:
-  - Heuristic constructive with repair.  
-  - Metaheuristics (e.g., Genetic Algorithm, Simulated Annealing, Tabu Neighborhood).  
-- Termination by max iterations/time or convergence threshold.
+- Initialization produces feasible or near-feasible candidates.[1]
+- Fitness aggregates hard and soft violations using configurable weights.[1]
+- Search strategies:
+  - Heuristic constructive with repair for fast feasibility.[1]
+  - Metaheuristics: Genetic Algorithm, Simulated Annealing, Tabu Neighborhood.[1]
+- Termination by max iterations, time budget, or convergence threshold.[1]
 
 ## Configuration
+Common flags:[1]
+- --input: path to data directory.
+- --out: output directory path.
+- --seed: RNG seed for reproducibility.
+- --max-iters / --time-budget: search effort limits.
+- --strategy: solver choice (heuristic, ga, etc.).
+- --weights: path to a JSON overriding weights in constraints.json.
 
-Common CLI flags:
-- --input: folder containing data files (default: data)  
-- --out: output directory (default: outputs)  
-- --seed: RNG seed for reproducibility (default: none)  
-- --max-iters / --time-budget: control search effort  
-- --strategy: choose solver strategy (e.g., heuristic, ga)  
-- --weights: path to custom weights JSON (overrides constraints.json weights)
-
-Example:
+Example:[1]
 ```
 python src/run_scheduler.py \
   --input data \
@@ -154,50 +120,45 @@ python src/run_scheduler.py \
   --seed 1337
 ```
 
-## Testing
+## Outputs
+- CSV/JSON master schedules per section, instructor, and room.[1]
+- HTML weekly/daily pages for quick review and printing.[1]
+- Deterministic runs when seed is specified.[1]
 
+## Testing
 - Data validation:
-```
-python scripts/validate_data.py --input data
-```
+  - python scripts/validate_data.py --input data.[1]
 - Unit tests:
-```
-pytest -q
-```
+  - pytest -q.[1]
+
+## Usage tips
+- Start with accurate room types/capacities and clear lab duration blocks.[1]
+- Encode faculty unavailability as fixed blocks or prohibited slots in soft rules with high weights.[1]
+- For tight instances, begin with heuristic strategy, then refine with GA at lower time budgets.[1]
 
 ## Roadmap
-
-- Instructor/room unavailability calendars and holiday/event exceptions.  
-- Multi-objective optimization with trade-off visualizations.  
-- Drag-and-drop manual edits with live conflict detection.  
-- Incremental re-scheduling for last-minute changes.
+- Instructor/room unavailability calendars and holiday/event exceptions.[1]
+- Multi-objective optimization and trade-off visualizations.[1]
+- Drag-and-drop manual edits with live conflict detection.[1]
+- Incremental re-scheduling for late changes.[1]
 
 ## Contributing
+- Fork, create a feature branch, commit changes, and open a PR with tests; include minimal reproducible data and exact constraints snippet for bug reports.[1]
 
-1) Fork the repo and create a feature branch:
 ```
 git checkout -b feature/amazing-improvement
-```
-2) Commit and push:
-```
 git commit -m "Add amazing improvement"
 git push origin feature/amazing-improvement
 ```
-3) Open a Pull Request with a clear description and tests.  
-4) For bug reports, include a minimal dataset in data/ and the exact constraints snippet to reproduce.
 
+
+## License
+Open-source; see repository for license details or include a LICENSE file if missing.[1]
 
 ## Acknowledgments
+Thanks to the IIIT Dharwad community and contributors for datasets, validation feedback, and deployment support.[1]
 
-Thanks to the IIIT Dharwad community and contributors for datasets, validation feedback, and deployment support.
+## Badges and status
+- Languages: Python 100% (per repository stats).[1]
+- Stars/Watchers/Forks: repository initialized; community growth welcome.[1]
 
-[1](https://github.com/topics/readme-template)
-[2](https://github.com/othneildrew/Best-README-Template)
-[3](https://gist.github.com/DomPizzie/7a5ff55ffa9081f2de27c315f5018afc)
-[4](https://www.readme-templates.com)
-[5](https://www.makeareadme.com)
-[6](https://docs.github.com/github/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax)
-[7](https://www.reddit.com/r/programming/comments/l0mgcy/github_readme_templates_creating_a_good_readme_is/)
-[8](https://rahuldkjain.github.io/gh-profile-readme-generator/)
-[9](https://github.com/topics/readme-template-list)
-[10](https://githubprofile.com/templates)
