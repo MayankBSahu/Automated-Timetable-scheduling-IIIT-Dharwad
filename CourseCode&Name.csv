@@ -1,0 +1,330 @@
+
+
+
+BATCH 1ST YEAR CSE A:
+
+MA161,Statistics
+DS161,Introduction to DS and AI
+MA162,Probability
+EC161,Digital Design
+CS161,Problem Solving through Programming
+HS161,English Language and Communication
+PH151,Introduction to Quantum Physics
+DS151,Linux for Engineers
+ELECTIVE  1,Fundamentals of sensing and Control
+HS157,Computational Musicology for Hindustani Music
+ELECTIVE  2,Kanada Kali-Nali
+ELECTIVE  3,Leveraging IT for Social Good & CSR
+ELECTIVE  4,IET
+HS156,Holistic Personality Development
+CS151,Introduction to Cybersecurity
+
+
+BATCH 1ST YEAR CSE B:
+
+
+MA161,Statistics
+DS161,Introduction to DS and AI
+MA162,Probability
+EC161,Digital Design
+CS161,Problem Solving through Programming
+HS161,English Language and Communication
+PH151,Introduction to Quantum Physics
+DS151,Linux for Engineers
+ELECTIVE  1,Fundamentals of sensing and Control
+HS157,Computational Musicology for Hindustani Music
+ELECTIVE  2,Kanada Kali-Nali
+ELECTIVE  3,Leveraging IT for Social Good & CSR
+ELECTIVE  4,Basics of Design
+HS156,Holistic Personality Development
+CS151,Introduction to Cybersecurity
+
+
+BATCH 1ST YEAR DSAI:
+
+
+MA161,Statistics
+DS161,Introduction to DS and AI
+MA162,Probability
+EC161,Digital Design
+CS161,Problem Solving through Programming
+PH151,Introduction to Quantum Physics
+DS151,Linux for Engineers
+ELECTIVE  1,Fundamentals of sensing and Control
+HS157,Computational Musicology for Hindustani Music
+ELECTIVE 2,Kanada Kali-Nali
+ELECTIVE 3,Leveraging IT for Social Good & CSR
+ELECTIVE 4,Basics of Design
+HS156,Holistic Personality Development
+CS151,Introduction to Cybersecurity
+
+
+BATCH 1ST YEAR ECE:
+
+
+
+MA161,Statistics
+DS161,Introduction to DS and AI
+MA162,Probability
+EC161,Digital Design
+CS161,Problem Solving through Programming
+PH151,Introduction to Quantum Physics
+DS151,Linux for Engineers
+ELECTIVE 1,Fundamentals of sensing and Control
+HS157,Computational Musicology for Hindustani Music
+ELECTIVE 2,Kanada Kali-Nali
+ELECTIVE 3,Leveraging IT for Social Good & CSR
+ELECTIVE 4,Basics of Design
+HS156,Holistic Personality Development
+CS161,Introduction to Cybersecurity
+
+
+BATCH 2ND YEAR CSE A:
+
+
+
+MA261,Differential Equations
+MA262,Multivariate Calculus
+CS261,Operating system
+CS262,Software design tools and techniques
+CS263,Design and Analysis of Algorithms
+CS264,Computer Networks
+HS261,HSS
+EC251,Electronics System Design-1
+EC252,Introduction of RFIC design
+ELECTIVE 1,Introduction to Embedded Signal Intelligence
+ELECTIVE 2,Electronics System Engineering
+CS152,Data Science with Python
+CS251,2D Computer Graphics
+
+
+BATCH 2ND YEAR CSE B:
+
+
+MA261,Differential Equations
+MA262,Multivariate Calculus
+CS261,Operating system
+CS262,Software design tools and techniques
+CS263,Design and Analysis of Algorithms
+CS264,Computer Networks
+HS261,HSS
+EC251,Electronics System Design-1
+EC252,Introduction of RFIC design
+ELECTIVE 1,Introduction to Embedded Signal Intelligence
+ELECTIVE 2,Electronics System Engineering
+CS152,Data Science with Python
+CS251,2D Computer Graphics
+
+
+BATCH 2ND YEAR DSAI:
+
+
+
+MA262,Multivariate Calcus
+MA261,Differential Equations
+DS261,Statistical Programming
+DA262,Data Handling And Visualization
+CS304,Artifical Intelligence
+CS307,Machine Learning
+HSS/IE,"Neuro-Linguistic Programming NLP"
+HSS/IE,Leadership
+HSS/IE,Sociology for Innovation
+HSS/IE,Social Impact of Technology
+HSS/IE,Holistic Personality Development
+EC251,Electronics System Design
+EC252,Introduction of RFIC design.
+ELECTIVE 1,"Introduction to Embedded Signal
+Intelligence"
+ELECTIVE 2,Electronic Systems Engineering
+CS152,Data Science with Python
+ELECTIVE  ,2D Computer Graphic 
+
+
+BATCH 2ND YEAR ECE:
+
+
+
+HSS/IE,"Neuro-Linguistic Programming NLP"
+HSS/IE,Leadership
+HSS/IE,Sociology for Innovation
+HSS/IE,Social Impact of Technology
+HSS/IE,Holistic Personality Development
+ELECTIVE 1,Electronics System Design-I
+ELECTIVE 2,Introduction of RFIC design 
+EC253,Introduction to Embedded Signal Inetelligence 
+ELECTIVE 3,Electronics System Engineering 
+CS162,Data science with python 
+ELECTIVE  4,2D Computer Graphic 
+
+
+
+
+BATCH 3RD YEAR CSE A:
+
+
+CS309,Statistics for Computer Science
+CS303,Computer Networks
+CS304,Artificial Intelligence
+HS101,Environmental Studies
+CS463,Parallel computing
+CS308,Compiler Design
+DS301,Graphs and Scoial Network
+CS366,Advanced Algorithm Design
+DS359,Full Stack Development
+EC355,Internet of Things
+EC364,Semiconductor Device Modeling
+CS352,Cryptography & Information Security
+EC365,AI in Biomedical Signal Interpretation
+
+
+BATCH 3RD YEAR CSE B:
+
+
+CS309,Statistics for Computer Science
+CS303,Computer Networks
+CS304,Artificial Intelligence
+HS101,Environmental Studies
+CS463,Parallel computing
+CS308,Compiler Design
+DS301,Graphs and Scoial Network
+CS366,Advanced Algorithm Design
+DS359,Full Stack Development
+EC355,Internet of Things
+EC364,Semiconductor Device Modeling
+CS352,Cryptography & Information Security
+EC365,AI in Biomedical Signal Interpretation
+
+
+BATCH 3RD YEAR DSAI:
+
+
+DS302,"Computer Communication Networks"
+DS303,"Algorithms and ArtificialIntelligence"
+CS307,Machine Learning
+CS463,Parallel computing
+CS308,Compiler Design
+DS301,Graphs and Scoial Network
+CS366,Advanced Algorithm Design
+DS359,Full Stack Development
+EC355,Internet of Things
+EC364,Semiconductor Device Modeling
+CS352,Cryptography & Information Security
+EC365,AI in Biomedical Signal Interpretation
+
+
+BATCH 3RD YEAR ECE:
+
+
+
+CS463,Parallel computing 
+CS308,Compiler design
+DS301,Graphs and Social Network 
+CS366,Advanced Algorithm Design 
+ELECTIVE 1,Full Stack Development 
+EC355,Internet of things
+ELECTIVE 2,Semiconductor Device Modeling 
+CS352,Cryptography & Information Security 
+EC358,AI in Biomedical Siganl Interpretation
+
+
+BATCH 3RD YEAR ECE:
+
+
+
+EC456,Reinforcement learning
+DS401,Health Care Data Analytics
+EC462,Generative AI
+EC465,Hands on CMOS Analog and RF circuit design
+PH454,Quantum (AI+Gen AI)
+CS457,DevOps and its Applications
+DS458,Agentic AI
+CS468,Information Retrieval
+CS473,Cloud SRE and Security
+ELECTIVE ,Software Defined Networks
+CS470,AI for cybersecurity
+DS102,Finance and Accounting
+MA452,Operation Research
+EC463,Energy Efficient Neural Networks
+
+
+
+BATCH 4TH YEAR CSE B:
+
+
+
+EC456,Reinforcement learning
+DS401,Health Care Data Analytics
+EC462,Generative AI
+EC465,Hands on CMOS Analog and RF circuit design
+PH454,Quantum (AI+Gen AI)
+CS457,DevOps and its Applications
+DS458,Agentic AI
+CS468,Information Retrieval
+CS473,Cloud SRE and Security
+ELECTIVE 1,Software Defined Networks
+CS470,AI for cybersecurity
+DS102,Finance and Accounting
+MA452,Operation Research
+EC463,Energy Efficient Neural Networks
+
+
+BATCH 4TH YEAR CSE B:
+
+
+
+EC456,Reinforcement learning
+DS401,Health Care Data Analytics
+EC462,Generative AI
+EC465,Hands on CMOS Analog and RF circuit design
+PH454,Quantum (AI+Gen AI)
+CS457,DevOps and its Applications
+DS458,Agentic AI
+CS468,Information Retrieval
+CS473,Cloud SRE and Security
+ELECTIVE 2,Software Defined Networks
+CS470,AI for cybersecurity
+DS102,Finance and Accounting
+MA452,Operation Research
+EC463,Energy Efficient Neural Networks
+
+
+BATCH 4TH YEAR DSAI:
+
+
+EC456,Reinforcement learning
+DS401,Health Care Data Analytics
+EC462,Generative AI
+EC465,Hands on CMOS Analog and RF circuit design
+PH454,Quantum (AI+Gen AI)
+CS457,DevOps and its Applications
+DS458,Agentic AI
+CS468,Information Retrieval
+CS473,Cloud SRE and Security
+ELECTIVE 3,Software Defined Networks
+CS470,AI for cybersecurity
+DS102,Finance and Accounting
+MA452,Operation Research
+EC463,Energy Efficient Neural Networks
+
+
+
+BATCH 4TH YEAR ECE:
+
+
+
+EC456,Reinforcement learning
+DS401,Health Care Data Analytics
+EC462,Generative AI
+EC465,Hands on CMOS Analog and RF circuit design
+PH454,Quantum (AI+Gen AI)
+CS457,DevOps and its Applications
+DS458,Agentic AI
+CS468,Information Retrieval
+CS473,Cloud SRE and Security
+ELECTIVE 4,Software Defined Networks
+CS470,AI for cybersecurity
+DS102,Finance and Accounting
+MA452,Operation Research
+EC463,Energy Efficient Neural Networks
+
+
