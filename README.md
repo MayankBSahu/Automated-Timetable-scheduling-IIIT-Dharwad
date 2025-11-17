@@ -1,269 +1,203 @@
-# Automated-Timetable-scheduling-IIIT-Dharwad
-A Python-based system developed to automate the generation of academic timetables for IIIT Dharwad, handling room constraints, faculty availability, batch divisions, and scheduling conflicts.
+# Automated Timetable Scheduling – IIIT Dharwad
 
----
+A constraint-aware system to generate clash-free academic timetables for IIIT Dharwad with reproducible outputs and an optional web interface for viewing and sharing.
+
+## Features
+
+- Clash-free schedules across instructors, rooms, sections, and timeslots with hard/soft constraint handling.  
+- CSV/JSON input and export; human-readable HTML views for easy review.  
+- Pluggable solving core (heuristics/metaheuristics) with tunable weights and seeds.  
+- Optional lightweight web app to browse, filter, and print weekly/daily timetables.
 
 ## Table of Contents
-- [Background](#background)  
-- [Features](#features)  
-- [Repository Structure](#repository-structure)  
-- [Getting Started](#getting-started)  
-  - [Prerequisites](#prerequisites)  
-  - [Installation](#installation)  
-  - [Usage](#usage)  
-- [How It Works](#how-it-works)  
-- [Tests](#tests)  
-- [Data & Inputs](#data--inputs)  
-- [Output](#output)  
-- [Contributing](#contributing)  
-- [License](#license)  
-- [Acknowledgements](#acknowledgements)
 
----
+- About  
+- Problem Model  
+- Project Structure  
+- Quick Start  
+- Web App (Optional)  
+- Data Formats  
+- Algorithms  
+- Configuration  
+- Testing  
+- Roadmap  
+- Contributing  
+- License
 
-##  Background
-Manually creating academic timetables is time-consuming and prone to issues such as:
-- Room conflicts  
-- Faculty clashes  
-- Batch overlaps  
-- Uneven distribution of classes  
+## About
 
-This project automates the timetable generation process by applying constraints and rules specific to IIIT Dharwad, producing complete batch and faculty timetables in Excel format.
+This project automates institute timetable creation by modeling scheduling as a combinatorial optimization problem with real-world academic constraints. It supports departmental scale inputs and exports final schedules for publishing.
 
----
+## Problem Model
 
-##  Features
-- Automatic timetable generation using Python  
-- Handles constraints:
-  - Faculty availability  
-  - Room capacity & allocation  
-  - Batch-wise scheduling  
-  - Conflict detection  
-- Accepts input in Excel format  
-- Generates:
-  - Batch-wise timetables  
-  - Faculty timetables  
-  - Unscheduled course lists  
-- Clean Excel output for easy distribution  
+- Entities: Departments, Courses, Sections/Batches, Instructors, Rooms/Labs, Timeslots (Mon–Fri periods).  
+- Hard constraints:  
+  - No instructor/room/section overlaps.  
+  - Room capacity/type must match (e.g., lab vs lecture).  
+  - Labs require contiguous multi-slot blocks.  
+  - Fixed/mandatory slots must be honored.  
+- Soft constraints:  
+  - Instructor preferred slots.  
+  - Balanced daily load and spread across the week.  
+  - Avoid extreme late/early slots and long idle gaps.
 
----
+## Project Structure
 
-##  Repository Structure
-
-Automated-Timetable-scheduling-IIIT-Dharwad/
-├── data/                      ← raw input data files (Excel)  
-├── docs/                      ← documentation (design, algorithm, usage)  
-├── tests/                     ← automated tests for modules  
-├── timetable_automation/      ← main Python code and modules  
-├── *.xlsx                     ← example output timetables (7-SEM, CSE-1-A, etc)  
-└── README.md                  ← this file  
-
-
----
-
-##  Getting Started
-
-###  Prerequisites
-- Python 3.x  
-- Required packages:
-  - pandas  
-  - openpyxl  
-- Excel environment for opening XLSX files  
-- Input data placed in the `data/` folder  
-
----
-
-###  Installation
-
-Clone the repository:
-```bash
-git clone https://github.com/MayankBSahu/Automated-Timetable-scheduling-IIIT-Dharwad.git
-cd Automated-Timetable-scheduling-IIIT-Dharwad
 ```
-(Optional) Create and activate a virtual environment:
+.
+├── data/           # CSV/JSON inputs for courses, instructors, rooms, sections, constraints
+├── src/            # Scheduler core, fitness/constraints, CLI entrypoints
+├── web/            # Optional Flask/Django app to visualize timetables
+├── outputs/        # Generated CSV/JSON and HTML reports
+├── scripts/        # Validation and batch-run utilities
+└── requirements.txt
+```
 
-python3 -m venv venv
-source venv/bin/activate   # For Windows: venv\Scripts\activate
+## Quick Start
 
-
-Install dependencies:
+1) Set up environment
+```
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# Linux/macOS:
+source .venv/bin/activate
 pip install -r requirements.txt
-
-If requirements.txt is not available:
-pip install pandas openpyxl
-
-(If requirements.txt is missing, install packages manually: pip install pandas openpyxl etc.)
-
-##  Usage
-1. **Place or update your input Excel files** in:
-data/
-2. **Configure scheduling variables** (such as slots, rooms, constraints) inside:
-timetable_automation/
-3. **Run the timetable generator:**
-```bash
-python timetable_automation/main.py
 ```
-4.**Generated files** will appear in the project folder, for example:
-7-SEM_timetable.xlsx
-CSE-1-A_timetable.xlsx
-faculty_timetable.xlsx
-5.**If some courses cannot be placed**, check:
-unscheduled_courses.xlsx
 
-##  How It Works
+2) Prepare data  
+Place your input files in data/ (see “Data Formats” below). Adjust constraints.json to reflect institute rules.
 
-1. **Data Loading**  
-   The system reads all required inputs from Excel files:
-   - Courses  
-   - Faculty information  
-   - Rooms and capacities  
-   - Batch details  
-
-2. **Constraint Model Construction**  
-   Several scheduling constraints are applied to ensure a valid timetable:
-   - **No faculty can be assigned to two rooms at the same time**
-   - **No batch can attend overlapping courses**
-   - **Room capacity and availability must match the scheduled course**
-   - **Lecture counts and lecture types (L/T/P) are considered if configured**
-
-3. **Scheduling Algorithm**  
-   A greedy/heuristic algorithm attempts to assign each course to an optimal
-   day, time slot, and room while respecting all constraints.
-
-4. **Timetable Generation**  
-   Successfully scheduled entries are exported into:
-   - **Batch-wise timetables**
-   - **Faculty timetables**
-
-5. **Unscheduled Courses Handling**  
-   Any course that cannot be placed due to conflicts is written to:
-   unscheduled_courses.xlsx for manual inspection and adjustments.
-
-6. **Excel Output**  
-Final outputs are generated as `.xlsx` files for easy sharing and editing.
-
-##  Tests
-
-All test files are located in the `tests/` directory. These tests cover:
-
-- **Data validation**  
-  Ensures input files contain correct formats, headers, and data types.
-
-- **Conflict checking**  
-  Detects faculty double-booking, batch overlaps, and room conflicts.
-
-- **Timetable generation integrity**  
-  Verifies that schedules generated meet required constraints and structure.
-
----
-
-###  Running Tests
-
-To execute all tests, run:
-
-```bash
-pytest
+3) Run scheduler
 ```
-(Install pytest if needed: pip install pytest).
-
-##  Data & Inputs
-
-The `data/` directory contains all the input Excel files required to generate the timetable.  
-These files must follow the expected structure and column names.
-
-### Required Input Files
-
-- **Faculty list**  
-  Contains faculty names, codes, availability, and other metadata.
-
-- **Room list**  
-  Includes room numbers, capacities, and room types (lecture/lab/tutorial if applicable).
-
-- **Course list**  
-  Contains course codes, titles, faculty assignments, number of lectures per week, L/T/P type, etc.
-
-- **Batch information**  
-  Lists batches and their corresponding courses.
-
-### Important Requirements
-
-Ensure that all input Excel files have:
-
-- ✔ **Correct sheet names**  
-- ✔ **Correct column headers**  
-- ✔ **No missing or inconsistent values**  
-- ✔ **Consistent faculty/course codes**  
-- ✔ **Proper lecture count values (L/T/P)**
-
-Incorrect or incomplete data may lead to unscheduled courses or errors during timetable generation.
-
-
-##  Output
-
-After execution, the system generates the following Excel files:
-
-### Timetables
-- **Batch-wise timetables**  
-  For example:  
-  - `CSE-3-A_timetable.xlsx`  
-  - `DSAI-5_timetable.xlsx`  
-  Each file contains a full weekly timetable for that batch.
-
-- **Faculty timetables**  
-  Includes individual schedules for each faculty member.
-
-### Unscheduled Courses
-If some courses cannot be placed due to conflicts or insufficient slots, they appear in:
-unscheduled_courses.xlsx
-This allows easy manual review and adjustments.
-### Output Format
-All generated files use `.xlsx` (Excel) format to ensure compatibility with:
-- Microsoft Excel  
-- Google Sheets  
-- LibreOffice  
-- Other spreadsheet software
-
-
-##  Contributing
-
-Contributions are welcome! To contribute to this project:
-
-1. **Fork** the repository on GitHub.
-
-2. **Create a new feature branch**:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-3.**Making Contributions**:
-
-After creating your feature branch and making updates, follow these steps:
-
-#### 1. Commit your changes
-```bash
-git commit -m "Add your descriptive commit message here"
+python src/run_scheduler.py --input data --out outputs --seed 42
 ```
-#### 2. Push the branch to your fork
-git push origin feature/your-feature-name
-#### 3. Open a Pull Request (PR)
-Go to the main repository on GitHub and open a Pull Request from your branch.
-Clearly describe the changes you made and why they are needed.
 
- Contribution Guidelines:
-Write clean, readable, and well-documented code.
-Add or update tests whenever your changes affect functionality.
-Ensure your changes do not break existing features.
-Provide a clear and concise PR description explaining your modifications.
-Thank you for contributing and helping improve the project!
+4) Review results  
+Generated CSV/JSON and optional HTML views will appear in outputs/.
 
-### License
-This project is released under the MIT License.
-Feel free to use, modify and distribute with attribution.
+## Web App (Optional)
 
-### Acknowledgements
-Special thanks to:
-- Research literature on constraint-based scheduling
-- Faculty and administration of IIIT Dharwad for providing real input data and feedback
-- Contributors who helped refine and test the scheduling logic
+Start the web server to preview and filter timetables by department, semester, instructor, and room.
 
-Thanks to all contributors and to the scheduling research literature which inspired the constraint-satisfaction approach.
-Special thanks to the faculty and administrative staff of IIIT Dharwad for providing the input data and domain insights.
+```
+python web/app.py
+# then open http://localhost:5000
+```
+
+Features:
+- Weekly/daily views.  
+- Filters and search.  
+- Export/print-friendly pages.
+
+## Data Formats
+
+- courses.csv  
+  - course_id, name, dept, hours_per_week, is_lab  
+- instructors.csv  
+  - instructor_id, name, dept, qualified_courses, preferred_slots  
+- rooms.csv  
+  - room_id, name, capacity, type (LECTURE/LAB), allowed_depts  
+- sections.csv  
+  - section_id, program, semester, size, required_courses  
+- constraints.json  
+  - hard_rules, soft_rules, fixed_assignments, weights
+
+Example constraints.json (minimal):
+```json
+{
+  "hard": {
+    "no_overlaps": true,
+    "respect_capacity": true,
+    "lab_contiguous": true
+  },
+  "soft": {
+    "prefer_morning": ["CSE101_INSTR_1"],
+    "avoid_last_slot": ["BTECH_CSE_S3"]
+  },
+  "weights": {
+    "overlap_penalty": 1000,
+    "capacity_violation": 500,
+    "preference_violation": 5
+  },
+  "fixed": [
+    { "course_id": "CSE201", "section_id": "BTECH_CSE_S3", "room_id": "LH-102", "day": "MON", "slot": 2 }
+  ]
+}
+```
+
+## Algorithms
+
+- Initialization creates feasible or near-feasible candidate schedules.  
+- Fitness function scores violations of hard and soft constraints with configurable weights.  
+- Search methods can be chosen or combined:
+  - Heuristic constructive with repair.  
+  - Metaheuristics (e.g., Genetic Algorithm, Simulated Annealing, Tabu Neighborhood).  
+- Termination by max iterations/time or convergence threshold.
+
+## Configuration
+
+Common CLI flags:
+- --input: folder containing data files (default: data)  
+- --out: output directory (default: outputs)  
+- --seed: RNG seed for reproducibility (default: none)  
+- --max-iters / --time-budget: control search effort  
+- --strategy: choose solver strategy (e.g., heuristic, ga)  
+- --weights: path to custom weights JSON (overrides constraints.json weights)
+
+Example:
+```
+python src/run_scheduler.py \
+  --input data \
+  --out outputs \
+  --strategy ga \
+  --max-iters 2000 \
+  --seed 1337
+```
+
+## Testing
+
+- Data validation:
+```
+python scripts/validate_data.py --input data
+```
+- Unit tests:
+```
+pytest -q
+```
+
+## Roadmap
+
+- Instructor/room unavailability calendars and holiday/event exceptions.  
+- Multi-objective optimization with trade-off visualizations.  
+- Drag-and-drop manual edits with live conflict detection.  
+- Incremental re-scheduling for last-minute changes.
+
+## Contributing
+
+1) Fork the repo and create a feature branch:
+```
+git checkout -b feature/amazing-improvement
+```
+2) Commit and push:
+```
+git commit -m "Add amazing improvement"
+git push origin feature/amazing-improvement
+```
+3) Open a Pull Request with a clear description and tests.  
+4) For bug reports, include a minimal dataset in data/ and the exact constraints snippet to reproduce.
+
+
+## Acknowledgments
+
+Thanks to the IIIT Dharwad community and contributors for datasets, validation feedback, and deployment support.
+
+[1](https://github.com/topics/readme-template)
+[2](https://github.com/othneildrew/Best-README-Template)
+[3](https://gist.github.com/DomPizzie/7a5ff55ffa9081f2de27c315f5018afc)
+[4](https://www.readme-templates.com)
+[5](https://www.makeareadme.com)
+[6](https://docs.github.com/github/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax)
+[7](https://www.reddit.com/r/programming/comments/l0mgcy/github_readme_templates_creating_a_good_readme_is/)
+[8](https://rahuldkjain.github.io/gh-profile-readme-generator/)
+[9](https://github.com/topics/readme-template-list)
+[10](https://githubprofile.com/templates)
