@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
-from main_facultytt import auto_adjust_column_widths, sanitize_sheet_name
+from timetable_automation import auto_adjust_column_widths, sanitize_sheet_name
 
 def auto_adjust_column_widths(ws):
     for col in ws.columns:
