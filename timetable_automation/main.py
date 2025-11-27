@@ -1,631 +1,875 @@
-
-import os
-import math
 import pandas as pd
+import json
 import random
-import hashlib
-from openpyxl import load_workbook
-from openpyxl.styles import Alignment, Border, Side, PatternFill
+import re
+import time
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 
-Random_SEED = 314156
-random.seed(Random_SEED)
+random.seed(42)
 
-# --------------------- Utility functions ---------------------
-def stable_hash_val(x: object) -> int:
-    """Return a stable integer hash for object x using SHA-256 (deterministic across runs)."""
-    h = hashlib.sha256(str(x).encode("utf-8")).hexdigest()
-    return int(h[:16], 16)
+days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+excluded = ["07:30-09:00", "10:30-10:45", "13:15-14:00","17:30-18:30"]
 
+colors = [
+    "FFB3BA","BAE1FF","BAFFC9","FFFFBA","FFD8BA","E3BAFF","D0BAFF","FFCBA4",
+    "C7FFD8","B8E1FF","F7FFBA","FFDFBA","E9BAFF","BAFFD9","FFE1BA","BAFFF2",
+    "D1FFBA","B2D8F7","F2C2FF","C2FFD8","FFB8E1","D8FFB8","FFE3BA","BAE7FF",
+    "E8BAFF","BAFFD6","FFF2BA","DAD7FF","BFFFE1","FFDAB8","E2FFBA","BAF7FF"
+]
 
-def stable_key(x: object) -> int:
-    """Combine stable hash and global Random_SEED to provide deterministic ordering."""
-    return stable_hash_val(x) ^ Random_SEED
+thin = Border(left=Side(style='thin'), right=Side(style='thin'),
+              top=Side(style='thin'), bottom=Side(style='thin'))
 
+with open("data/time_slots.json") as f:
+    slots = json.load(f)["time_slots"]
 
-# --------------------- Data container ---------------------
-class Course:
-    """Container for course attributes (code, title, L-T-P-S-C, faculty, basket, elective flag)."""
+def t2m(t):
+    h, m = map(int, t.split(":"))
+    return h*60 + m
 
-    def __init__(self, row):
-        self.code = str(row["Course_Code"]).strip()
-        self.basket = int(row.get("basket", 0))
-        self.title = str(row.get("Course_Title", self.code)).strip()
-        self.faculty = str(row.get("Faculty", "")).strip()
-        self.ltp = str(row["L-T-P-S-C"]).strip()
-        # keep original CSV field name semantics
-        self.sem_half = str(row.get("Semester_Half", "0")).strip()
-        self.is_elective = str(row.get("Elective", 0)).strip() == "1"
-        # parse L-T-P-S-C; be tolerant to malformed values
-        try:
-            parts = list(map(int, self.ltp.split("-")))
-            # some CSVs have 5 parts, some 3; ensure at least L, T, P present
-            if len(parts) >= 5:
-                self.L, self.T, self.P, self.S, self.C = parts[:5]
-            else:
-                # pad shorter arrays
-                while len(parts) < 5:
-                    parts.append(0)
-                self.L, self.T, self.P, self.S, self.C = parts[:5]
-        except Exception:
-            self.L, self.T, self.P, self.S, self.C = 0, 0, 0, 0, 0
+slots_norm = [
+    {
+        "key": f"{s['start']}-{s['end']}",
+        "start": s['start'],
+        "end": s['end'],
+        "dur": (t2m(s["end"]) - t2m(s["start"])) / 60.0
+    }
+    for s in slots
+]
+slots_norm.sort(key=lambda x: t2m(x["start"]))
+slot_keys = [s["key"] for s in slots_norm]
+slot_dur = {s["key"]: s["dur"] for s in slots_norm}
 
+coursesAI = pd.read_csv("data/coursesCSEA-I.csv").to_dict(orient="records")
+coursesBI = pd.read_csv("data/coursesCSEB-I.csv").to_dict(orient="records")
+coursesA  = pd.read_csv("data/coursesCSEA-III.csv").to_dict(orient="records")
+coursesB  = pd.read_csv("data/coursesCSEB-III.csv").to_dict(orient="records")
+coursesV  = pd.read_csv("data/coursesCSE-V.csv").to_dict(orient="records")
+coursesDSAI = pd.read_csv("data/coursesDSAI-III.csv").to_dict(orient="records")
+coursesECE  = pd.read_csv("data/coursesECE-III.csv").to_dict(orient="records")
+coursesVII  = pd.read_csv("data/courses7.csv").to_dict(orient="records")
+coursesDSAI_I = pd.read_csv("data/coursesDSAI-I.csv").to_dict(orient="records")
+coursesDSAI_V = pd.read_csv("data/coursesDSAI-V.csv").to_dict(orient="records")
+coursesECE_I  = pd.read_csv("data/coursesECE-I.csv").to_dict(orient="records")
+coursesECE_V  = pd.read_csv("data/coursesECE-V.csv").to_dict(orient="records")
 
-# --------------------- Scheduler ---------------------
-class Scheduler:
-    """
-    Responsible for:
-    - Reading slots, courses, rooms
-    - Building timetables (First_Half and Second_Half)
-    - Assigning rooms (lab vs classroom)
-    - Applying deterministic tie-breaking (stable hash + seed)
-    - Exporting timetables and faculty sheets to Excel and applying formatting
-    """
+rooms = pd.read_csv("data/rooms.csv")
+rooms["Room_ID"] = rooms["Room_ID"].astype(str).str.strip()
+cls = rooms[rooms["Room_ID"].str.startswith('C')].copy()
+labs = rooms[rooms["Room_ID"].str.startswith('L')].copy()
 
-    def __init__(self, slots_file, courses_file, rooms_file, global_room_usage):
-        # Read timeslots
-        slot_frame = pd.read_csv(slots_file)
-        self.slots = [f"{r['Start_Time'].strip()}-{r['End_Time'].strip()}" for _, r in slot_frame.iterrows()]
-        self.slot_lengths = {s: self._slot_len(s) for s in self.slots}
+try:
+    reg = pd.read_csv("registrations.csv")
+    reg.set_index("Course_Code", inplace=True)
+except Exception:
+    reg = None
 
-        # Read courses
-        course_data = pd.read_csv(courses_file)
-        self.courses = [Course(row) for _, row in course_data.iterrows()]
+def regd(c):
+    try:
+        return int(reg.at[c, "Registered"])
+    except Exception:
+        return 0
 
-        # Read rooms
-        rooms_df = pd.read_csv(rooms_file)
-        self.classrooms, self.labs, self.all_rooms = [], [], []
-        for _, row in rooms_df.iterrows():
-            room_id = str(row["Room_ID"]).strip()
-            self.all_rooms.append(room_id)
-            if room_id.upper().startswith("L"):
-                self.labs.append(room_id)
-            elif room_id.upper().startswith("C"):
-                self.classrooms.append(room_id)
+def s(v):
+    if v is None: return ""
+    if isinstance(v, float) and pd.isna(v): return ""
+    return str(v).strip()
 
-        # Scheduling parameters
-        self.days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-        self.excluded = ["07:30-09:00", "13:15-14:00", "17:40-18:30"]
-        self.MAX_ATTEMPTS = 10
+def ltp(sv):
+    try:
+        p = [x.strip() for x in sv.split("-")]
+    except Exception:
+        return [0,0,0,0,0]
+    while len(p) < 5:
+        p.append("0")
+    return list(map(int, p[:5]))
 
-        # Mutable state that gets populated during scheduling
-        self.unscheduled_list = []
-        self.course_room_map = {}
-        self.global_room_usage = global_room_usage  # external mapping across depts
-        self.records = []  # each scheduled placement as dict
-        self.elective_groups = {}
-        self.elective_room_map = {}
-        self.break_after_slots = 1
+pat = re.compile(r"^[A-Z]{1,5}\d{0,3}([+/\\-][A-Z]{1,5}\d{0,3})*$", re.I)
+def valid(c):
+    codes, err = [], []
+    for x in c:
+        code = s(x.get("Course_Code", ""))
+        if not code: continue
+        if code.upper() in {"NEW", "ELECTIVE"}:
+            codes.append(code.upper()); continue
+        if not pat.match(code):
+            err.append(code)
+        codes.append(code.upper())
+    dup = {x for x in codes if codes.count(x) > 1 and x not in {"NEW", "ELECTIVE"}}
+    if dup: err += list(dup)
+    return err
+def is_combined_course(code, rm):
+    return (code, "L") in rm and rm[(code, "L")] == "C004"
+lab_prefix_for_class_prefix = {
+    "C1": "L1",
+    "C2": "L2",
+    "C3": "L3",
+    "C4": "L4",
+}
 
-    # --------------------- Helpers ---------------------
-    def _slot_len(self, slot):
-        start, end = slot.split("-")
-        h1, m1 = map(int, start.split(":"))
-        h2, m2 = map(int, end.split(":"))
-        return (h2 + m2 / 60) - (h1 + m1 / 60)
+def room_candidates(lab=False, prefix=None, lab_prefix=None):
+    df = labs if lab else cls
+    if df.empty:
+        return []
+    cand = df.copy()
+    if prefix:
+        c = cand[cand['Room_ID'].str.upper().str.startswith(prefix.upper())]
+        if not c.empty:
+            cand = c
+        else:
+            cand = df.copy()
+    if lab and lab_prefix:
+        c = cand[cand['Room_ID'].str.upper().str.startswith(lab_prefix.upper())]
+        if not c.empty:
+            cand = c
+    return cand["Room_ID"].tolist()
 
-    def _free_blocks(self, table, day):
-        """
-        Return contiguous free-slot blocks (lists of slot keys) for a given day's timetable.
-        Excluded slots are treated as occupied.
-        """
-        blocks, tmp = [], []
-        for slot in self.slots:
-            if table.at[day, slot] == "" and slot not in self.excluded:
-                tmp.append(slot)
-            else:
-                if tmp:
-                    blocks.append(tmp)
-                    tmp = []
-        if tmp:
-            blocks.append(tmp)
-        return blocks
+def pick_room_for_slots(candidates, day, slots_to_use, room_busy, rr_state_key=None, rr_state=None):
+    if not candidates:
+        return None
+    ordered = candidates
+    if rr_state is not None and rr_state_key is not None and len(candidates) > 0:
+        idx = rr_state.get(rr_state_key, 0) % len(candidates)
+        ordered = candidates[idx:] + candidates[:idx]
+    for cand in ordered:
+        used = room_busy.get(day, {}).get(cand, set())
+        if not (set(slots_to_use) & used):
+            if rr_state is not None and rr_state_key is not None and len(candidates) > 0:
+                rr_state[rr_state_key] = (rr_state.get(rr_state_key, 0) + 1) % len(candidates)
+            return cand
+    return None
 
-    # --------------------- Core allocation ---------------------
-    def _assign_session(self, table, faculty_busy, lab_flag, day, faculty, code, hrs, session_type="L", is_elective=False, sheet_name=None):
-        """
-        Try to place a contiguous session of 'hrs' hours on 'day' for course 'code'.
-        Respects faculty busy times, lab-day restrictions, room availability, and excluded slots.
-        Adds entries to self.records and updates global_room_usage when room assigned.
-        Returns True on successful placement.
-        """
-        # prevent placing same course multiple times on same day for same sheet
-        for rec in self.records:
-            if rec["day"] == day and rec["code"] == code and rec["sheet"] == sheet_name:
+def free(tt, d, ex=False):
+    fb, b = [], []
+    for s_ in slot_keys:
+        if not ex and s_ in excluded:
+            if b:
+                fb.append(b); b = []
+            continue
+        if tt.at[d, s_] == "":
+            b.append(s_)
+        else:
+            if b:
+                fb.append(b); b = []
+    if b: fb.append(b)
+    return fb
+
+def alloc_specific(tt, busy, rm, room_busy, day, slots_to_use, f, code, typ, elec, labsd, course_usage,
+                   class_prefix=None, rr_state=None,hide_c004=False):
+    for s_ in slots_to_use:
+        if s_ not in slot_keys or tt.at[day, s_] != "":
+            return False
+            
+    if code not in course_usage[day]:
+        course_usage[day][code] = {"L":0,"T":0,"P":0}
+
+    usage = course_usage[day][code]
+
+# For electives: Do NOT treat P as a real lab hour
+    if typ == "P" and elec:
+    # Elective lab behaves like theory: allow unlimited placement
+        pass
+    else:
+        if typ == "P":
+            if usage["P"] >= 1:
                 return False
+        else:
+            if (usage["L"] + usage["T"]) >= 1:
+                return False
+    r = None
+    if not elec:
+        key = (code, typ)
+        if key in rm:
+            candidate = rm[key]
+            if candidate != "C004": 
+                used = room_busy.get(day, {}).get(candidate, set())
+                if set(slots_to_use) & used:
+                    return False
+            r = candidate
+        else:
+            if typ == "P" and elec:
+                r = None
+            elif typ == "P":
+                lab_pref = lab_prefix_for_class_prefix.get(class_prefix, None)
+                candidates = room_candidates(lab=True, prefix=None, lab_prefix=lab_pref)
+            else:
+                candidates = room_candidates(lab=False, prefix=class_prefix, lab_prefix=None)
+            r = pick_room_for_slots(candidates, day, slots_to_use, room_busy, rr_state_key=class_prefix, rr_state=rr_state)
+            if r is None:
+                return False
+            rm[key] = r
 
-        # cannot schedule practical if a lab already scheduled that day (policy from original code)
-        if session_type == "P" and lab_flag[day]:
+    for s_ in slots_to_use:
+        if is_combined_course(code, rm):
+            if hide_c004:
+                if typ == "P":
+                    v = f"{code} (Lab)"
+                elif typ == "T":
+                    v = f"{code}T"
+                else:
+                    v = f"{code}"
+            else:
+                if typ == "P":
+                    v = f"{code} (Lab)"
+                elif typ == "T":
+                    v = f"{code}T (C004)"
+                else:
+                    v = f"{code} (C004)"
+        else:
+            if r and not elec:
+                if elec and typ == "P":
+                    v = f"{code}(Lab)"
+                elif typ == "T": 
+                    v = f"{code}T ({r})"
+                elif typ == "P": 
+                    v = f"{code} (Lab-{r})"
+                else: 
+                    v = f"{code} ({r})"
+            else:
+                if elec and typ == "P":
+                    v = f"{code}(Lab)"
+                elif typ == "T":
+                    v = f"{code}T"
+                else:
+                    v = code
+        tt.at[day, s_] = v
+
+    if f:
+        busy[day].setdefault(f, set()).update(slots_to_use)
+    if r:
+        room_busy.setdefault(day, {}).setdefault(r, set()).update(slots_to_use)
+    if typ == "P":
+        labsd.add(day)
+    course_usage[day][code][typ] += 1
+    return True
+
+def alloc(tt, busy, rm, room_busy, d, f, code, h, typ="L", elec=False, labsd=set(), ex=False,
+          preferred_slots=None, course_usage=None, class_prefix=None, rr_state=None,hide_c004=False):
+    if course_usage is None:
+        course_usage = {dd:{} for dd in days}
+    if code not in course_usage[d]:
+        course_usage[d][code] = {"L":0,"T":0,"P":0}
+
+    usage = course_usage[d][code]
+
+    if typ == "P":
+
+        if usage["P"] >= 1: 
+            return False
+    else:
+        if (usage["L"] + usage["T"]) >= 1: 
             return False
 
-        free_blocks = self._free_blocks(table, day)
-        for block in free_blocks:
-            total = sum(self.slot_lengths[s] for s in block)
-            if total >= hrs:
-                slots_to_use, dur_accum = [], 0.0
-                for s in block:
-                    slots_to_use.append(s)
-                    dur_accum += self.slot_lengths[s]
-                    if dur_accum >= hrs:
-                        break
+    if preferred_slots:
+        pref_day, pref_slots = preferred_slots
+        if pref_day == d:
+            total = sum(slot_dur[s] for s in pref_slots)
+            if total + 1e-9 >= h:
+                if alloc_specific(tt, busy, rm, room_busy, pref_day, pref_slots, f, code, typ, elec, labsd, course_usage, class_prefix=class_prefix, rr_state=rr_state,hide_c004=hide_c004):
+                    return True
 
-                # faculty availability check
-                if faculty:
-                    busy = any(faculty in faculty_busy[day][s] for s in slots_to_use)
-                    if busy:
+    for blk in free(tt, d, ex):
+        if sum(slot_dur[s] for s in blk) + 1e-9 < h: continue
+        use = []; dur = 0.0
+        for s_ in blk:
+            use.append(s_); dur += slot_dur[s_]
+            if dur + 1e-9 >= h: break
+        if not ex and any(s_ in excluded for s_ in use): continue
+        if f and f in busy[d] and (set(use) & busy[d][f]): continue
+
+        if not elec:
+            key = (code, typ)
+            if key in rm:
+                r = rm[key]
+                if r != "C004":
+                    used = room_busy.get(d, {}).get(r, set())
+                    if set(use) & used:
                         continue
-
-                # room assignment
-                if not is_elective:
-                    mapped = self.course_room_map.get(code)
-                    if mapped:
-                        # if mapped room suits session type, use it
-                        if (session_type == "P" and mapped.upper().startswith("L")) or (session_type != "P" and not mapped.upper().startswith("L")):
-                            room = mapped
-                        else:
-                            mapped = None
-                    if not mapped:
-                        possible_rooms = self.labs if session_type == "P" else self.classrooms
-                        available_rooms = [
-                            r for r in possible_rooms
-                            if all(r not in self.global_room_usage.get(day, {}).get(s, []) for s in slots_to_use)
-                        ]
-                        if not available_rooms:
-                            return False
-                        # deterministic selection using stable ordering and numeric seed
-                        room = sorted(available_rooms, key=lambda r: stable_key(r))[Random_SEED % len(available_rooms)]
-                        self.course_room_map[code] = room
-
-                    # mark room usage
-                    for s in slots_to_use:
-                        self.global_room_usage.setdefault(day, {}).setdefault(s, []).append(room)
+            else:
+                if typ == "P" and elec:
+                    r = None
+                elif typ == "P":
+                    lab_pref = lab_prefix_for_class_prefix.get(class_prefix, None)
+                    candidates = room_candidates(lab=True, prefix=None, lab_prefix=lab_pref)
+                    r = pick_room_for_slots(candidates, d, use, room_busy, rr_state_key=lab_pref, rr_state=rr_state)
                 else:
-                    room = ""
+                    candidates = room_candidates(lab=False, prefix=class_prefix, lab_prefix=None)
+                    r = pick_room_for_slots(candidates, d, use, room_busy, rr_state_key=class_prefix, rr_state=rr_state)
+                
+                if r is None:
+                    continue
+                rm[(code, typ)] = r
+        else:
+            r = None
 
-                # write to timetable and records
-                for i, s in enumerate(slots_to_use):
-                    if session_type == "L":
-                        display_text = f"{code} ({room})" if (room and not is_elective) else code
-                    elif session_type == "T":
-                        display_text = f"{code}T ({room})" if (room and not is_elective) else f"{code}T"
-                    elif session_type == "P":
-                        display_text = f"{code} (Lab-{room})" if (room and not is_elective) else code
+        for s_ in use:
+            if is_combined_course(code, rm):
+                if hide_c004:
+                    if typ == "P":
+                        v = f"{code}(Lab)"
+                    elif typ == "T":
+                        v = f"{code}T"
                     else:
-                        display_text = code
-
-                    table.at[day, s] = display_text
-                    self.records.append({
-                        "sheet": sheet_name,
-                        "day": day,
-                        "slot": s,
-                        "code": code,
-                        "display": display_text,
-                        "faculty": faculty,
-                        "room": room,
-                    })
-
-                    # prevent tiny-gap double booking for quarter-hour small breaks
-                    if i < len(slots_to_use) - 1:
-                        idx = self.slots.index(s)
-                        if idx + 1 < len(self.slots):
-                            gap_slot = self.slots[idx + 1]
-                            if table.at[day, gap_slot] == "" and math.isclose(self.slot_lengths[gap_slot], 0.25):
-                                table.at[day, gap_slot] = "FREE"
-
-                # mark faculty busy
-                if faculty:
-                    for s in slots_to_use:
-                        faculty_busy[day][s].append(faculty)
-
-                # flag that a lab was scheduled that day
-                if session_type == "P":
-                    lab_flag[day] = True
-
-                # insert post-session break slots (if empty)
-                last_slot = slots_to_use[-1]
-                idx = self.slots.index(last_slot)
-                for extra in range(1, self.break_after_slots + 1):
-                    if idx + extra < len(self.slots):
-                        next_slot = self.slots[idx + extra]
-                        if table.at[day, next_slot] == "":
-                            table.at[day, next_slot] = "BREAK"
-                            if faculty:
-                                faculty_busy[day][next_slot].append(faculty)
-                            if not is_elective and room:
-                                self.global_room_usage.setdefault(day, {}).setdefault(next_slot, []).append(room)
-
-                return True
-
-        return False
-
-    # --------------------- Timetable generation ---------------------
-    def generate_timetable(self, course_list, writer, sheet_name):
-        """
-        Build a timetable DataFrame for the given course_list and write it to the provided Excel writer
-        under 'sheet_name'. This fills self.records and possibly self.unscheduled_list.
-        """
-        timetable = pd.DataFrame("", index=self.days, columns=self.slots)
-        faculty_busy = {day: {slot: [] for slot in self.slots} for day in self.days}
-        labs_scheduled = {day: False for day in self.days}
-        self.course_room_map = {}
-
-        # separate electives and non-electives
-        electives = [c for c in course_list if c.is_elective]
-        non_electives = [c for c in course_list if not c.is_elective]
-
-        # group electives by basket
-        baskets = {}
-        for e in electives:
-            baskets.setdefault(e.basket, []).append(e)
-
-        chosen_electives = []
-        # choose one elective per basket deterministically
-        for b in sorted(baskets.keys()):
-            if b == 0:
-                continue
-            group = baskets[b]
-            pick = group[stable_hash_val(b) % len(group)]
-            chosen_electives.append((b, pick))
-
-            # create a placeholder course entry for the chosen elective (so it gets scheduled like a normal course)
-            elective_course = Course({
-                "Course_Code": f"Elective_{b}",
-                "Course_Title": pick.title,
-                "Faculty": pick.faculty,
-                "L-T-P-S-C": pick.ltp,
-                "Semester_Half": pick.sem_half,
-                "Elective": 0,
-            })
-            non_electives.append(elective_course)
-
-        self.elective_groups[sheet_name] = chosen_electives
-
-        # deterministic ordering of non-electives (stable_key ensures constant ordering)
-        non_electives.sort(key=lambda c: stable_key(c.code))
-
-        # allocate for each course: Lectures (L), Tutorials (T), Practicals (P)
-        for course in non_electives:
-            faculty, code, is_elective = course.faculty, course.code, course.code.startswith("Elective_")
-
-            # Lectures (each lecture block may be 1.5 hours)
-            remaining, attempts = course.L, 0
-            while remaining > 0 and attempts < self.MAX_ATTEMPTS:
-                attempts += 1
-                days_to_try = sorted(self.days, key=lambda d: stable_key(f"{d}-L"))
-                for day in days_to_try:
-                    if remaining <= 0 or (faculty and faculty in faculty_busy[day]):
-                        continue
-                    alloc = min(1.5, remaining)
-                    if self._assign_session(timetable, faculty_busy, labs_scheduled, day, faculty, code, alloc, "L", is_elective, sheet_name):
-                        remaining -= alloc
-                        break
-
-            if remaining > 0:
-                self.unscheduled_list.append({
-                    "sheet": sheet_name,
-                    "course_code": code,
-                    "course_title": course.title,
-                    "faculty": faculty,
-                    "type": "Lecture",
-                    "remaining_hours": remaining,
-                    "semester_half": course.sem_half
-                })
-
-            # Tutorials (1 hour each)
-            remaining, attempts = course.T, 0
-            while remaining > 0 and attempts < self.MAX_ATTEMPTS:
-                attempts += 1
-                days_to_try = sorted(self.days, key=lambda d: stable_key(f"{d}-T"))
-                for day in days_to_try:
-                    if remaining <= 0 or (faculty and faculty in faculty_busy[day]):
-                        continue
-                    if self._assign_session(timetable, faculty_busy, labs_scheduled, day, faculty, code, 1, "T", is_elective, sheet_name):
-                        remaining -= 1
-                        break
-
-            if remaining > 0:
-                self.unscheduled_list.append({
-                    "sheet": sheet_name,
-                    "course_code": code,
-                    "course_title": course.title,
-                    "faculty": faculty,
-                    "type": "Tutorial",
-                    "remaining_hours": remaining,
-                    "semester_half": course.sem_half
-                })
-
-            # Practicals (labs)
-            remaining, attempts = course.P, 0
-            while remaining > 0 and attempts < self.MAX_ATTEMPTS:
-                attempts += 1
-                days_without_labs = [d for d in self.days if not labs_scheduled[d]]
-                days_to_try = sorted(days_without_labs, key=lambda d: stable_key(f"{d}-P"))
-                for day in days_to_try:
-                    if remaining <= 0 or (faculty and faculty in faculty_busy[day]):
-                        continue
-                    alloc = 2 if remaining >= 2 else remaining
-                    if self._assign_session(timetable, faculty_busy, labs_scheduled, day, faculty, code, alloc, "P", is_elective, sheet_name):
-                        remaining -= alloc
-                        break
-
-            if remaining > 0:
-                self.unscheduled_list.append({
-                    "sheet": sheet_name,
-                    "course_code": code,
-                    "course_title": course.title,
-                    "faculty": faculty,
-                    "type": "Lab",
-                    "remaining_hours": remaining,
-                    "semester_half": course.sem_half
-                })
-
-        # Clear excluded slots in final timetable (set to empty string)
-        for day in self.days:
-            for slot in self.excluded:
-                if slot in timetable.columns:
-                    timetable.at[day, slot] = ""
-
-        # Write timetable sheet
-        timetable.to_excel(writer, sheet_name=sheet_name, index=True)
-        print(f"Saved timetable sheet: {sheet_name}")
-
-    # --------------------- Elective room assignment ---------------------
-    def _compute_elective_room_assignments_legally(self, sheet_name):
-        """
-        Assign rooms to chosen elective placeholders ensuring no room conflicts.
-        This produces a mapping self.elective_room_map[sheet_name] = {key: room}
-        where key is 'Elective_basket||Title'.
-        """
-        electives = self.elective_groups.get(sheet_name, [])
-        if not electives:
-            self.elective_room_map[sheet_name] = {}
-            return
-
-        # gather (day, slot) pairs where elective placeholders are scheduled
-        elective_slots = [(r["day"], r["slot"]) for r in self.records if r["sheet"] == sheet_name and r["code"].startswith("Elective_")]
-        elective_slots = sorted(list(dict.fromkeys(elective_slots)))
-
-        candidate_rooms = list(self.classrooms) + list(self.labs)
-        room_free_all_slots = {}
-        for r in candidate_rooms:
-            ok = True
-            for day, slot in elective_slots:
-                if r in self.global_room_usage.get(day, {}).get(slot, []):
-                    ok = False
-                    break
-            room_free_all_slots[r] = ok
-
-        free_rooms = [r for r, ok in room_free_all_slots.items() if ok]
-        if not free_rooms:
-            # compute counts of free slots per room and sort by best fit
-            room_free_counts = {r: 0 for r in candidate_rooms}
-            for r in candidate_rooms:
-                for day, slot in elective_slots:
-                    if r not in self.global_room_usage.get(day, {}).get(slot, []):
-                        room_free_counts[r] += 1
-            ordered = sorted(candidate_rooms, key=lambda x: (-room_free_counts[x], stable_key(x)))
-            free_rooms = ordered
-
-        assigned = {}
-        used = set()
-        idx = 0
-        for basket, elective in electives:
-            key = f"Elective_{basket}||{elective.title}"
-            chosen_room = None
-            for r in free_rooms:
-                if r in used:
-                    continue
-                ok = True
-                for day, slot in elective_slots:
-                    if r in self.global_room_usage.get(day, {}).get(slot, []):
-                        ok = False
-                        break
-                if ok:
-                    chosen_room = r
-                    break
-            if not chosen_room:
-                chosen_room = free_rooms[idx % len(free_rooms)] if free_rooms else ""
-            assigned[key] = chosen_room
-            used.add(chosen_room)
-            idx += 1
-
-        self.elective_room_map[sheet_name] = assigned
-
-    # --------------------- Excel formatting for student timetables ---------------------
-    def format_student_timetable_with_legend(self, filename):
-        """
-        Apply coloring, merges, borders and a legend to the student timetable workbook.
-        A legend is added below each sheet summarizing course codes, titles and colors.
-        """
-        wb = load_workbook(filename)
-        thin_border = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
-
-        color_map = {}
-        palette = ["FFC7CE", "C6EFCE", "FFEB9C", "BDD7EE", "D9EAD3", "F4CCCC", "D9D2E9", "FCE5CD", "C9DAF8", "EAD1DC"]
-        color_index = 0
-
-        # precompute elective room assignments
-        for sheet_name in wb.sheetnames:
-            self._compute_elective_room_assignments_legally(sheet_name)
-
-        for sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
-
-            # color and merge cells for each row
-            for row in range(2, ws.max_row + 1):
-                start_col = 2
-                while start_col <= ws.max_column:
-                    cell = ws.cell(row=row, column=start_col)
-                    val = str(cell.value).strip() if cell.value is not None else ""
-
-                    if val and val not in ["FREE", "BREAK"]:
-                        raw_code = val.split(" ")[0]
-                        code = raw_code.rstrip("T")
-                        if code not in color_map:
-                            color_map[code] = palette[color_index % len(palette)]
-                            color_index += 1
-                        fill = PatternFill(start_color=color_map[code], end_color=color_map[code], fill_type="solid")
-
-                        cell.fill = fill
-
-                        merge_count = 0
-                        for col in range(start_col + 1, ws.max_column + 1):
-                            next_cell = ws.cell(row=row, column=col)
-                            if next_cell.value == cell.value:
-                                next_cell.fill = fill
-                                merge_count += 1
-                            else:
-                                break
-                        if merge_count > 0:
-                            ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=start_col + merge_count)
-
-                        cell.alignment = Alignment(horizontal="center", vertical="center")
-                        for col_idx in range(start_col, start_col + merge_count + 1):
-                            ws.cell(row=row, column=col_idx).border = thin_border
-                        start_col += merge_count + 1
-                    elif val == "BREAK":
-                        cell.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-                        cell.alignment = Alignment(horizontal="center", vertical="center")
-                        cell.border = thin_border
-                        start_col += 1
+                        v = f"{code}"
+                else:
+                    if typ == "P":
+                        v = f"{code} (Lab)"
+                    elif typ == "T":
+                        v = f"{code}T (C004)"
                     else:
-                        cell.border = thin_border
-                        start_col += 1
+                        v = f"{code} (C004)"
+            else:
+                if r and not elec:
+                    if elec and typ == "P":
+                        v = f"{code}(Lab)"
+                    elif typ == "T": 
+                        v = f"{code}T ({r})"
+                    elif typ == "P": 
+                        v = f"{code} (Lab-{r})"
+                    else: 
+                        v = f"{code} ({r})"
+                else:
+                    if elec and typ == "P":
+                        v = f"{code}(Lab)"
+                    elif typ == "T":
+                        v = f"{code}T"
+                    else:
+                        v = code
+            tt.at[d, s_] = v
+        if f:
+            busy[d].setdefault(f, set()).update(use)
+        if r:
+            room_busy.setdefault(d, {}).setdefault(r, set()).update(use)
+        if typ == "P":
+            labsd.add(d)
+        course_usage[d][code][typ] += 1
+        return True
 
-            # add legend header and entries (student timetable legend)
-            start_row = ws.max_row + 3
-            headers = ["S.No", "Course Code", "Course Title", "L-T-P-S-C", "Faculty", "Color"]
-            for idx, header in enumerate(headers, start=2):
-                ws.cell(start_row, idx, header).border = thin_border
-                ws.cell(start_row, idx).alignment = Alignment(horizontal="center", vertical="center")
+    return False
 
-            i = 1
-            for code in color_map:
-                if code.startswith("Elective_"):
-                    continue
-                ws.cell(start_row + i, 2, i).border = thin_border
-                ws.cell(start_row + i, 3, code).border = thin_border
-                course_name = next((c.title for c in self.courses if c.code == code), code)
-                ltpsc = next((c.ltp for c in self.courses if c.code == code), "")
-                faculty = next((c.faculty for c in self.courses if c.code == code), "")
-                ws.cell(start_row + i, 4, course_name).border = thin_border
-                ws.cell(start_row + i, 5, ltpsc).border = thin_border
-                ws.cell(start_row + i, 5).alignment = Alignment(horizontal="center", vertical="center")
-                ws.cell(start_row + i, 6, faculty).border = thin_border
-                color_cell = ws.cell(start_row + i, 7, "")
-                color_cell.fill = PatternFill(start_color=color_map[code], end_color=color_map[code], fill_type="solid")
-                color_cell.border = thin_border
-                i += 1
+def get_all_valid_free_slots(tt):
+    valid = []
+    for d in reversed(days):
+        for s_ in reversed(slot_keys):
+            if s_ in excluded: continue
+            if tt.at[d, s_] == "": valid.append((d, s_))
+    return valid
 
-            # tidy borders for timetable region and column widths
-            timetable_max_row = len(self.days) + 1
-            timetable_max_col = ws.max_column
-            for row_cells in ws.iter_rows(min_row=2, max_row=timetable_max_row, min_col=2, max_col=timetable_max_col):
-                for cell in row_cells:
-                    cell.border = thin_border
+def get_all_excluded_free_slots(tt):
+    exs = []
+    for d in reversed(days):
+        for s_ in reversed(slot_keys):
+            if s_ not in excluded: continue
+            if tt.at[d, s_] == "": exs.append((d, s_))
+    return exs
 
-            ws.freeze_panes = "B2"
-            for col_cells in ws.columns:
-                try:
-                    column_letter = col_cells[0].column_letter
-                except Exception:
-                    continue
-                max_length = 0
-                for cell in col_cells:
-                    if cell.value is not None:
-                        max_length = max(max_length, len(str(cell.value)))
-                ws.column_dimensions[column_letter].width = max_length + 2
+def extract_contiguous_blocks(slot_list):
+    blocks = []
+    i = 0
+    while i < len(slot_list):
+        d0, s0 = slot_list[i]
+        cur_day = d0
+        cur_slots = [s0]
+        i += 1
+        while i < len(slot_list) and slot_list[i][0] == cur_day:
+            cur_slots.append(slot_list[i][1]); i += 1
+        blocks.append((cur_day, cur_slots))
+    return blocks
 
-        wb.save(filename)
-        print(f"Formatted student timetable saved in {filename}")
+def try_allocate_chunk_from_block(tt, busy, rm, room_busy, labsd, course_usage,
+                                  code, faculty, typ, need, day, slots, class_prefix=None, rr_state=None,hide_c004=False):
+    n = len(slots)
+    for i in range(n):
+        accum = 0.0; sub = []
+        for j in range(i, n):
+            sub.append(slots[j]); accum += slot_dur[slots[j]]
+            if accum + 1e-9 >= need:
+                for s_ in sub:
+                    if tt.at[day, s_] != "": break
+                else:
+                    ok = alloc_specific(tt, busy, rm, room_busy, day, sub, faculty, code, typ, False, labsd, course_usage, class_prefix=class_prefix, rr_state=rr_state,hide_c004=hide_c004)
+                    if ok:
+                        new_slots = slots[:i] + slots[j+1:]
+                        return new_slots
+                break
+    return None
 
+def assign_combined_precise_durations(tt, busy, rm, room_busy, labsd, course_usage, combined_core, rr_state=None,hide_c004=False):
+    if not combined_core:
+        return []
+    combined_list = []
+    chunks_map = {}
+    for c in combined_core:
+        code = s(c.get("Course_Code", ""))
+        if not code: continue
+        rm[(code, "L")] = "C004"
+        rm[(code, "T")] = "C004"
+        rm[(code, "P")] = "C004"
+        L, T, P, _, _ = ltp(c.get("L-T-P-S-C", "0-0-0-0-0"))
+        ch = []
+        rem = float(L)
+        while rem > 1e-9:
+            if rem >= 1.5:
+                ch.append((1.5, "L")); rem -= 1.5
+            else:
+                ch.append((1.0, "L")); rem -= 1.0
+        rem = float(T)
+        while rem > 1e-9:
+            ch.append((1.0, "T")); rem -= 1.0
+        rem = float(P)
+        while rem > 1e-9:
+            if rem >= 2.0:
+                ch.append((2.0, "P")); rem -= 2.0
+            elif rem >= 1.5:
+                ch.append((1.5, "P")); rem -= 1.5
+            else:
+                ch.append((1.0, "P")); rem -= 1.0
+        chunks_map[code] = sorted(ch, key=lambda x: -x[0])
+        combined_list.append((code, c))
+
+    valid_slots = get_all_valid_free_slots(tt)
+    valid_blocks = extract_contiguous_blocks(valid_slots)
+    excluded_slots = get_all_excluded_free_slots(tt)
+    excluded_blocks = extract_contiguous_blocks(excluded_slots)
+    placed = []
+
+    for code, c in combined_list:
+        chunks = chunks_map[code]; faculty = s(c.get("Faculty", ""))
+        days_used = set()
+        for need, typ in chunks:
+            allocated = False
+            for idx, (day, slots) in enumerate(valid_blocks):
+                if day in days_used: continue
+                new_slots = try_allocate_chunk_from_block(tt, busy, rm, room_busy, labsd, course_usage,
+                                                          code, faculty, typ, need, day, slots,
+                                                          class_prefix="C0", rr_state=rr_state,hide_c004=hide_c004)
+                if new_slots is not None:
+                    valid_blocks[idx] = (day, new_slots); days_used.add(day); allocated = True; break
+            if not allocated:
+                for idx, (day, slots) in enumerate(excluded_blocks):
+                    if day in days_used: continue
+                    new_slots = try_allocate_chunk_from_block(tt, busy, rm, room_busy, labsd, course_usage,
+                                                              code, faculty, typ, need, day, slots,
+                                                              class_prefix="C0", rr_state=rr_state,hide_c004=hide_c004)
+                    if new_slots is not None:
+                        excluded_blocks[idx] = (day, new_slots); days_used.add(day); allocated = True; break
+        placed.append(code)
+    return placed
+
+color_avail = colors.copy(); random.shuffle(color_avail); color_map = {}
+def get_color_for_course(course_code):
+    k = course_code.strip().upper()
+    if k == "": return None
+    if k not in color_map:
+        if color_avail: color_map[k] = color_avail.pop()
+        else: color_map[k] = "CCCCCC"
+    return color_map[k]
+
+def merge_and_color(ws, courses):
+    sc = 2; mc = ws.max_column; mr = ws.max_row
+    valid_course_codes = {s(x.get("Course_Code","")).replace("T","").strip().upper() for x in courses if s(x.get("Course_Code",""))}
+    valid_course_codes |= {f"ELECTIVE{i}" for i in range(1,60)}
+    for col in range(2, mc+1):
+        cell = ws.cell(2, col)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin
+    for r in range(3, mr+1):
+        c = sc
+        while c <= mc:
+            raw = ws.cell(r, c).value
+            if raw is None or str(raw).strip() == "":
+                ws.cell(r, c).border = thin; c += 1; continue
+            val = str(raw).strip(); merge_cols = [c]
+            if "(" in val:
+                if "Lab" in val: expected = 2.0
+                elif val.endswith("T") or "T " in val or "T(" in val: expected = 1.0
+                else: expected = 1.5
+            else: expected = 1.5
+            slot_index = c - sc; total = 0.0
+            if 0 <= slot_index < len(slot_keys):
+                total = slot_dur[slot_keys[slot_index]]
+            next_col = c + 1
+            while next_col <= mc:
+                next_raw = ws.cell(r, next_col).value
+                next_val = str(next_raw).strip() if next_raw is not None else ""
+                if next_val == val:
+                    sn_idx = next_col - sc
+                    if 0 <= sn_idx < len(slot_keys):
+                        total += slot_dur[slot_keys[sn_idx]]
+                    merge_cols.append(next_col)
+                    if total + 1e-9 >= expected: break
+                    next_col += 1
+                else: break
+            if len(merge_cols) > 1:
+                ws.merge_cells(start_row=r, start_column=merge_cols[0], end_row=r, end_column=merge_cols[-1])
+            cell = ws.cell(r, merge_cols[0])
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.font = Font(bold=True)
+            raw_course_name = val.split()[0] if val.split() else val
+            raw_course_name = raw_course_name.replace("T","").replace("(","").strip().upper()
+            fill_color = get_color_for_course(raw_course_name) if (raw_course_name in valid_course_codes or raw_course_name.startswith("ELECTIVE")) else None
+            for cc_ in merge_cols:
+                cell_ref = ws.cell(r, cc_)
+                cell_ref.border = thin
+                cell_ref.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                cell_ref.font = Font(bold=True)
+                if fill_color: cell_ref.fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
+            c = merge_cols[-1] + 1
+    for col in ws.columns:
+        maxl = 0; cl = col[0].column_letter
+        for cell in col:
+            v = cell.value
+            if v is None: continue
+            maxl = max(maxl, len(str(v)))
+        ws.column_dimensions[cl].width = min(maxl + 2 if maxl else 8, 60)
+
+def add_csv_legend_block(ws, csv_path, legend_title, room_prefix=None, elective_room_map=None):
+    if elective_room_map is None:
+        elective_room_map = {}
+
+    ws.append([""]); ws.append([""]); ws.append([f"Legend - {legend_title}"])
+    title_cell = ws.cell(row=ws.max_row, column=1)
+    title_cell.font = Font(bold=True, size=13)
+    title_cell.alignment = Alignment(horizontal="left", vertical="center")
+
+    df = pd.read_csv(csv_path)
+    expect_cols = ["Course_Code", "Course_Title", "L-T-P-S-C", "Faculty", "Semester_Half", "Elective", "ElectiveBasket"]
+    for ec in expect_cols:
+        if ec not in df.columns:
+            alt = None; low = ec.lower()
+            for c in df.columns:
+                if c.lower() == low:
+                    alt = c; break
+            if alt: df.rename(columns={alt: ec}, inplace=True)
+            else:
+                if ec == "Semester_Half": df[ec] = 0
+                elif ec == "Elective": df[ec] = 0
+                else: df[ec] = ""
+
+    df = df[["Course_Code", "Course_Title", "L-T-P-S-C", "Faculty", "Semester_Half", "Elective", "ElectiveBasket"]].copy()
+
+    def map_sem(x):
+        try: xi = int(x)
+        except Exception: xi = 0
+        if xi == 1: return "First Half"
+        if xi == 2: return "Second Half"
+        return "Full Sem"
+    def map_elec(x):
+        try: xi = int(x)
+        except Exception: xi = 0
+        return "Yes" if xi == 1 else "No"
+
+    df["Semester_Half"] = df["Semester_Half"].apply(map_sem)
+    df["Elective"] = df["Elective"].apply(map_elec)
+
+    all_classrooms = cls["Room_ID"].tolist()
+
+    master_pool = sorted(list(set(all_classrooms)))
+    random.shuffle(master_pool)
+    # ------------------------------------------------------
+
+    elective_rooms = []
+    for _, row in df.iterrows():
+        if row["Elective"] == "Yes":
+            basket = str(row.get("ElectiveBasket", "")).strip()
+            if basket and basket != "0":
+                sync_name = f"{row['Course_Code']}_B{basket}"
+            else:
+                sync_name = row["Course_Code"]
+
+            if sync_name in elective_room_map:
+                chosen = elective_room_map[sync_name]
+            else:
+                taken_rooms = set(elective_room_map.values())
+            
+                candidates = [r for r in master_pool if r not in taken_rooms]
+                
+                if candidates:
+                    chosen = candidates[0]
+                else:
+                    chosen = random.choice(master_pool)
+                
+                elective_room_map[sync_name] = chosen
+
+            elective_rooms.append(f"{chosen} (random)")
+        else:
+            elective_rooms.append("")
+
+    df["Elective Room"] = elective_rooms
+
+    headers = ["Course Code","Course Title","L-T-P-S-C","Faculty","Semester Half","Elective","Elective Basket","Elective Room"]
+
+    ws.append(headers); header_row = ws.max_row
+    for i, _h in enumerate(headers, start=1):
+        c = ws.cell(header_row, i); c.font = Font(bold=True); c.alignment = Alignment(horizontal="center", vertical="center"); c.border = thin; c.fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+
+    for idx, row in df.iterrows():
+        rowvals = [
+            s(row["Course_Code"]),
+            s(row["Course_Title"]),
+            s(row["L-T-P-S-C"]),
+            s(row["Faculty"]),
+            s(row["Semester_Half"]),
+            s(row["Elective"]),
+            s(row["ElectiveBasket"]),
+            row["Elective Room"]
+        ]
+        ws.append(rowvals)
+        for i in range(1, 8):
+            cc = ws.cell(ws.max_row, i); cc.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True); cc.border = thin
+    ws.append([""])
+
+def generate(courses, ws, label, seed, elective_sync, room_prefix=None, elective_room_map=None, room_busy_global=None,hide_c004=False):
+    if elective_room_map is None:
+        elective_room_map = {}
+    if valid(courses): return []
     
-    # --------------------- Full run helper ---------------------
-    def run_all_outputs(self, dept_name_prefix="CSE", student_filename=None):
-        """
-        Generate student timetables (First_Half and Second_Half) and a combined faculty workbook.
-        Also writes an unscheduled courses file if any course couldn't be placed.
-        """
-        if not student_filename:
-            student_filename = f"{dept_name_prefix}_timetable.xlsx"
+    ws.append([""]); ws.append([label])
+    ws.cell(row=ws.max_row, column=1).font = Font(bold=True, size=12)
+    
+    tt = pd.DataFrame("", index=days, columns=slot_keys)
+    busy = {d:{} for d in days}
+    
+    if room_busy_global is not None:
+        room_busy = room_busy_global
+    else:
+        room_busy = {d:{} for d in days}
 
-        # reset state for this run
-        self.records = []
-        self.elective_groups = {}
-        self.elective_room_map = {}
-        self.unscheduled_list = []
+    rm = {}
+    labsd = set()
+    course_usage = {d:{} for d in days}
+    rr_state = {}
 
-        # write student timetables
-        with pd.ExcelWriter(student_filename, engine="openpyxl") as writer:
-            # first half (semester_half == "1" or "0")
-            self.generate_timetable([c for c in self.courses if c.sem_half in ["1", "0"]], writer, "First_Half")
-            # second half (semester_half == "2" or "0")
-            self.generate_timetable([c for c in self.courses if c.sem_half in ["2", "0"]], writer, "Second_Half")
+    elec = [x for x in courses if s(x.get("Elective","")) == "1"]
+    combined_core = [x for x in courses if s(x.get("Elective","")) != "1" and s(x.get("Is_Combined","0")) == "1"]
+    regular_core = [x for x in courses if s(x.get("Elective","")) != "1" and s(x.get("Is_Combined","0")) != "1"]
 
-        # export unscheduled courses if any
-        if self.unscheduled_list:
-            unsched_file = f"{dept_name_prefix}_unscheduled_courses.xlsx"
-            pd.DataFrame(self.unscheduled_list).to_excel(unsched_file, index=False)
-            print(f"Some courses couldn't be scheduled. See '{unsched_file}' for details.")
+    baskets = {}; elec_no_baskets = []
+    for e in elec:
+        b = s(e.get("ElectiveBasket","0"))
+        if b and b != "0": baskets.setdefault(b,[]).append(e)
+        else: elec_no_baskets.append(e)
+    basket_reps = []
+    for b, group in sorted(baskets.items(), key=lambda x: int(x[0]) if x[0].isdigit() else 0):
+        chosen = group[0]
+        sync_identifier = f"{chosen.get('Course_Code')}_B{b}"
+        basket_reps.append({
+            "Course_Code": f"Elective{b}",
+            "Course_Title": chosen.get("Course_Title","") or chosen.get("Course_Code",""),
+            "Faculty": chosen.get("Faculty",""),
+            "L-T-P-S-C": chosen.get("L-T-P-S-C","0-0-0-0-0"),
+            "Elective": "1",
+            "ElectiveBasket": b,
+            "_sync_name": sync_identifier
+        })
 
-        # remove default sheets left by pandas writer if any
-        wb = load_workbook(student_filename)
-        for default in ["Sheet", "Sheet1"]:
-            if default in wb.sheetnames and len(wb.sheetnames) > 1:
-                wb.remove(wb[default])
-        wb.save(student_filename)
+    for e in elec_no_baskets:
+        basket = s(e.get("ElectiveBasket","0"))
+        if basket and basket != "0":
+            sync_n = f"{s(e.get('Course_Code'))}_B{basket}"
+        else:
+            sync_n = s(e.get("Course_Code"))
+        e["_sync_name"] = sync_n if sync_n else None
+    elec_final = elec_no_baskets + basket_reps
 
-        # compute elective room assignments using final records
-        for sheet in wb.sheetnames:
-            self._compute_elective_room_assignments_legally(sheet)
+    for c in combined_core:
+        code = s(c.get("Course_Code",""))
+        rm[(code,"L")] = "C004"; rm[(code,"T")] = "C004"; rm[(code,"P")] = "C004"
 
-        # format student workbook 
-        self.format_student_timetable_with_legend(student_filename)
+    def place_course_list(course_list, start_idx_ref):
+        placed_list = []
+        for c in course_list:
+            f = s(c.get("Faculty",""))
+            code = s(c.get("Course_Code","UNKNOWN"))
+            is_elec_flag = (code.startswith("Elective") or s(c.get("Elective","")) == "1")
+            L, T, P, S, Cc = ltp(c.get("L-T-P-S-C","0-0-0-0-0"))
+            for h, typ in [(L,"L"), (T,"T"), (P,"P")]:
+                attempts = 0
+                while h > 1e-9 and attempts < 400:
+                    if typ == "P":
+                        a = 2.0 if h >= 2 else (1.5 if h >= 1.5 else 1.0)
+                    else:
+                        a = 1.5 if h >= 1.5 else 1.0
+                    placed = False
+                    sync_name = c.get("_sync_name", None)
 
+                    if is_elec_flag and sync_name and sync_name in elective_room_map:
+                        for ttkey in [("L"), ("T"), ("P")]:
+                            rm[(code, ttkey)] = elective_room_map[sync_name]
 
-# --------------------- Script entrypoint ---------------------
+                    if sync_name and sync_name in elective_sync:
+                        pref = elective_sync[sync_name]
+                        if alloc(tt, busy, rm, room_busy, pref["day"], f, code, a, typ, is_elec_flag, labsd, False, preferred_slots=(pref["day"], pref["slots"]), course_usage=course_usage, class_prefix=room_prefix, rr_state=rr_state,hide_c004=hide_c004):
+                            h -= a; placed = True
+
+                    if not placed:
+                        for i in range(5):
+                            if is_elec_flag:
+                                d_order = days[:]
+                            else:
+                                start_idx = start_idx_ref[0]
+                                d_order = days[start_idx:] + days[:start_idx]
+                                start_idx_ref[0] = (start_idx_ref[0] + 1) % len(days)
+                            for d in d_order:
+                                if alloc(tt, busy, rm, room_busy, d, f, code, a, typ, is_elec_flag, labsd, False, course_usage=course_usage, class_prefix=room_prefix, rr_state=rr_state,hide_c004=hide_c004):
+                                    h -= a; placed = True; break
+                            if placed:
+                                break
+                    if not placed:
+                        for d in days:
+                            if alloc(tt, busy, rm, room_busy, d, f, code, a, typ, is_elec_flag, labsd, True, course_usage=course_usage, class_prefix=room_prefix, rr_state=rr_state,hide_c004=hide_c004):
+                                h -= a; placed = True; break
+
+                    if placed and sync_name and sync_name not in elective_sync:
+                        for dcheck in days:
+                            slots_used = [s_ for s_ in slot_keys if tt.at[dcheck, s_].startswith(code)]
+                            if slots_used:
+                                accum = []; acc_dur = 0.0
+                                for s_ in slots_used:
+                                    accum.append(s_); acc_dur += slot_dur[s_]
+                                    if acc_dur + 1e-9 >= a:
+                                        elective_sync[sync_name] = {"day": dcheck, "slots": accum.copy()}
+                                        break
+                                if sync_name in elective_sync: break
+
+                    attempts += 1
+            placed_list.append(c)
+        return placed_list
+
+    start_idx_ref = [seed % len(days)]
+    elec_final.sort(key=lambda x: 0 if x.get("_sync_name") in elective_sync else 1)
+    
+    priority_placed = place_course_list(elec_final, start_idx_ref)
+
+    combined_placed = assign_combined_precise_durations(tt, busy, rm, room_busy, labsd, course_usage, combined_core, rr_state=rr_state, hide_c004=hide_c004)
+
+    regular_placed = place_course_list(regular_core, start_idx_ref)
+
+    ws.append(["Day"] + slot_keys)
+    for d in days:
+        ws.append([d] + [tt.at[d, s] for s in slot_keys])
+    ws.append([""])
+    return (priority_placed + regular_placed + combined_core)
+def split(c):
+    f = [x for x in c if s(x.get("Semester_Half","")) in ["1","0"]]
+    s2 = [x for x in c if s(x.get("Semester_Half","")) in ["2","0"]]
+    return f, s2
+
 if __name__ == "__main__":
-    # departments mapping (department_name -> courses csv)
-    departments = {
-        "CSE-3-A": "data/CSE_3_A_courses.csv",
-        "CSE-3-B": "data/CSE_3_B_courses.csv",
-        "CSE-1-A": "data/CSE_1_A_courses.csv",
-        "CSE-1-B": "data/CSE_1_B_courses.csv",
-        "CSE-5-A": "data/CSE_5_A_courses.csv",
-        "CSE-5-B": "data/CSE_5_B_courses.csv",
-        "7-SEM": "data/DSAI_7_courses.csv",
-        "DSAI-3": "data/DSAI_3_courses.csv",
-        "ECE-3": "data/ECE_3_courses.csv",
-        "DSAI-1": "data/DSAI_1_courses.csv",
-        "ECE-1": "data/ECE_1_courses.csv",
-        "DSAI-5": "data/DSAI_5_courses.csv",
-        "ECE-5": "data/ECE_5_courses.csv",
-    }
-    rooms_file = "data/rooms.csv"
-    slots_file = "data/timeslots.csv"
-    global_room_usage = {}
+    wb = Workbook()
+    seed = random.randint(0, 999999)
 
-    all_records = []
+    elective_room_map = {}
+    global_room_busy = {d: {} for d in days}
 
-    # generate per-department timetables
-    for dept_name, course_file in departments.items():
-        print(f"\nGenerating student timetable for {dept_name}...")
-        scheduler = Scheduler(slots_file, course_file, rooms_file, global_room_usage)
-        student_file = f"{dept_name}_timetable.xlsx"
-        scheduler.run_all_outputs(dept_name_prefix=dept_name, student_filename=student_file)
+    sync_sem1 = {}
+    sync_sem3 = {}
+    sync_sem5 = {}
+    sync_sem7 = {}
 
-        # collect scheduled entries and course-room map for a combined faculty book later
-        all_records.extend(scheduler.records)
-        for k, v in scheduler.course_room_map.items():
-            global_room_usage.setdefault("MAPPING", {})[k] = v
+    ws1 = wb.active
+    ws1.title = "CSE-I Timetable"
+    cAf, cAs = split(coursesAI)
+    cBf, cBs = split(coursesBI)
+    
+    csea_block = generate(cAf, ws1, "CSEA I First Half", seed+0, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,hide_c004=True)
+    csea_block2 = generate(cAs, ws1, "CSEA I Second Half", seed+1, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,hide_c004=True)
+    add_csv_legend_block(ws1, "data/coursesCSEA-I.csv", "CSEA I", room_prefix="C1", elective_room_map=elective_room_map)
+    
+    cseb_block = generate(cBf, ws1, "CSEB I First Half", seed+2, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,hide_c004=True)
+    cseb_block2 = generate(cBs, ws1, "CSEB I Second Half", seed+3, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,hide_c004=True)
+    add_csv_legend_block(ws1, "data/coursesCSEB-I.csv", "CSEB I", room_prefix="C1", elective_room_map=elective_room_map)
+    
+    combined_i_courses = (csea_block or []) + (csea_block2 or []) + (cseb_block or []) + (cseb_block2 or [])
+    merge_and_color(ws1, combined_i_courses)
 
-    # build combined faculty workbook from all departments
-    combined_courses = []
-    for dept_name, course_file in departments.items():
-        df = pd.read_csv(course_file)
-        for _, row in df.iterrows():
-            combined_courses.append(Course(row))
+    # --- DSAI-I ---
+    ws7 = wb.create_sheet("DSAI-I Timetable")
+    d1f_i, d1s_i = split(coursesDSAI_I)
+    dsai1_block1 = generate(d1f_i, ws7, "DSAI-I First Half", seed+16, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    dsai1_block2 = generate(d1s_i, ws7, "DSAI-I Second Half", seed+17, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    add_csv_legend_block(ws7, "data/coursesDSAI-I.csv", "DSAI I", room_prefix="C1", elective_room_map=elective_room_map)
+    combined_dsai1_courses = (dsai1_block1 or []) + (dsai1_block2 or [])
+    merge_and_color(ws7, combined_dsai1_courses)
 
-    helper = Scheduler(slots_file, departments[list(departments.keys())[0]], rooms_file, global_room_usage)
-    helper.courses = combined_courses
-    helper.records = all_records
-    print("\nAll done. Student timetables generated.")
+    # --- ECE-I ---
+    ws9 = wb.create_sheet("ECE-I Timetable")
+    e1f_i, e1s_i = split(coursesECE_I)
+    ece1_block1 = generate(e1f_i, ws9, "ECE-I First Half", seed+20, sync_sem1, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    ece1_block2 = generate(e1s_i, ws9, "ECE-I Second Half", seed+21, sync_sem1, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    add_csv_legend_block(ws9, "data/coursesECE-I.csv", "ECE I", room_prefix="C4", elective_room_map=elective_room_map)
+    combined_ece1_courses = (ece1_block1 or []) + (ece1_block2 or [])
+    merge_and_color(ws9, combined_ece1_courses)
+    # --- CSE-III (Sections A & B) ---
+    ws2 = wb.create_sheet("CSE-III Timetable")
+    c1f, c1s = split(coursesA); c2f, c2s = split(coursesB)
+    
+    csea3_block1 = generate(c1f, ws2, "CSEA III First Half", seed+4, sync_sem3, room_prefix='C2', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    csea3_block2 = generate(c1s, ws2, "CSEA III Second Half", seed+5, sync_sem3, room_prefix='C2', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    add_csv_legend_block(ws2, "data/coursesCSEA-III.csv", "CSEA III", room_prefix="C2", elective_room_map=elective_room_map)
+    
+    cseb3_block1 = generate(c2f, ws2, "CSEB III First Half", seed+6, sync_sem3, room_prefix='C2', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    cseb3_block2 = generate(c2s, ws2, "CSEB III Second Half", seed+7, sync_sem3, room_prefix='C2', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    add_csv_legend_block(ws2, "data/coursesCSEB-III.csv", "CSEB III", room_prefix="C2", elective_room_map=elective_room_map)
+    
+    combined_iii_courses = (csea3_block1 or []) + (csea3_block2 or []) + (cseb3_block1 or []) + (cseb3_block2 or [])
+    merge_and_color(ws2, combined_iii_courses)
+
+    # --- DSAI-III ---
+    ws4 = wb.create_sheet("DSAI-III Timetable")
+    d1f, d1s = split(coursesDSAI)
+    dsa_block1 = generate(d1f, ws4, "DSAI-III First Half", seed+10, sync_sem3, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    dsa_block2 = generate(d1s, ws4, "DSAI-III Second Half", seed+11, sync_sem3, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    add_csv_legend_block(ws4, "data/coursesDSAI-III.csv", "DSAI", room_prefix="C4", elective_room_map=elective_room_map)
+    combined_dsa_courses = (dsa_block1 or []) + (dsa_block2 or [])
+    merge_and_color(ws4, combined_dsa_courses)
+
+    # --- ECE-III ---
+    ws5 = wb.create_sheet("ECE-III Timetable")
+    e1f, e1s = split(coursesECE)
+    ece_block1 = generate(e1f, ws5, "ECE-III First Half", seed+12, sync_sem3, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    ece_block2 = generate(e1s, ws5, "ECE-III Second Half", seed+13, sync_sem3, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    add_csv_legend_block(ws5, "data/coursesECE-III.csv", "ECE", room_prefix="C4", elective_room_map=elective_room_map)
+    combined_ece_courses = (ece_block1 or []) + (ece_block2 or [])
+    merge_and_color(ws5, combined_ece_courses)
+
+    # --- CSE-V ---
+    ws3 = wb.create_sheet("CSE-V Timetable")
+    c5f, c5s = split(coursesV)
+    c5_block1 = generate(c5f, ws3, "CSE-V First Half", seed+8, sync_sem5, room_prefix='C3', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    c5_block2 = generate(c5s, ws3, "CSE-V Second Half", seed+9, sync_sem5, room_prefix='C3', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    add_csv_legend_block(ws3, "data/coursesCSE-V.csv", "CSE V", room_prefix="C3", elective_room_map=elective_room_map)
+    combined_v_courses = (c5_block1 or []) + (c5_block2 or [])
+    merge_and_color(ws3, combined_v_courses)
+
+    # --- DSAI-V ---
+    ws8 = wb.create_sheet("DSAI-V Timetable")
+    d5f_v, d5s_v = split(coursesDSAI_V)
+    dsai5_block1 = generate(d5f_v, ws8, "DSAI-V First Half", seed+18, sync_sem5, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    dsai5_block2 = generate(d5s_v, ws8, "DSAI-V Second Half", seed+19, sync_sem5, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    add_csv_legend_block(ws8, "data/coursesDSAI-V.csv", "DSAI V", room_prefix="C4", elective_room_map=elective_room_map)
+    combined_dsai5_courses = (dsai5_block1 or []) + (dsai5_block2 or [])
+    merge_and_color(ws8, combined_dsai5_courses)
+
+    # --- ECE-V ---
+    ws10 = wb.create_sheet("ECE-V Timetable")
+    e5f_v, e5s_v = split(coursesECE_V)
+    ece5_block1 = generate(e5f_v, ws10, "ECE-V First Half", seed+22, sync_sem5, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    ece5_block2 = generate(e5s_v, ws10, "ECE-V Second Half", seed+23, sync_sem5, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    add_csv_legend_block(ws10, "data/coursesECE-V.csv", "ECE V", room_prefix="C4", elective_room_map=elective_room_map)
+    combined_ece5_courses = (ece5_block1 or []) + (ece5_block2 or [])
+    merge_and_color(ws10, combined_ece5_courses)
+    # --- DSAI 7th Sem ---
+    ws6 = wb.create_sheet("DSAI 7TH-SEM Timetable")
+    s7f, s7s = split(coursesVII)
+    s7_block1 = generate(s7f, ws6, "DSAI 7TH-SEM First Half", seed+14, sync_sem7, room_prefix='C3', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    s7_block2 = generate(s7s, ws6, "DSAI 7TH-SEM Second Half", seed+15, sync_sem7, room_prefix='C3', elective_room_map=elective_room_map, room_busy_global=global_room_busy)
+    add_csv_legend_block(ws6, "data/courses7.csv", "7TH SEM", room_prefix="C3", elective_room_map=elective_room_map)
+    combined_7_courses = (s7_block1 or []) + (s7_block2 or [])
+    merge_and_color(ws6, combined_7_courses)
+
+    name = f"Balanced_Timetable_latest.xlsx"
+    wb.save(name)
+    print("✅ Evenly balanced timetable saved in", name)
