@@ -3,8 +3,11 @@
 Exam timetable scheduler — single merged courses CSV version.
 Assumes these files are located in the same folder as this script:
   - rooms.csv
-  - Faculty.csv
+  - Faculty.csv      (note capital F as in your workspace)
   - final_merged_courses.csv
+
+Grouping rule: Format 2 source_file values (e.g. "CSE_1_A", "CSE_3", "DSAI_7")
+are collapsed into broader groups like "CSE-1", "CSE-3", "DSAI-7" (Option B).
 
 All output sheets will display dates as Day1, Day2, ... (no real dates shown).
 """
@@ -15,7 +18,6 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Border, Side, PatternFill
 from datetime import datetime, timedelta
-from collections import defaultdict
 
 # --- Configuration ---
 SLOT_LABELS = ["09:00-12:00", "14:00-17:00"]
@@ -31,10 +33,17 @@ def invigilators_needed(capacity):
     return 2 if capacity >= 200 else 1
 
 def extract_semester_id(group_name: str) -> str:
+    # group_name like "CSE-1" or "DSAI-7" -> return "1" or "7"
     m = re.search(r"(\d+)", str(group_name))
     return m.group(1) if m else str(group_name)
 
 def collapse_to_broad_group(source_file: str) -> str:
+    """
+    Converts source_file format (Format 2) to Option B group:
+      - "CSE_1_A" -> "CSE-1"
+      - "CSE_3"   -> "CSE-3"
+      - "DSAI_7"  -> "DSAI-7"
+    """
     if not isinstance(source_file, str):
         return str(source_file)
     parts = [p for p in source_file.split("_") if p.strip()]
@@ -64,6 +73,7 @@ class Course:
         flag = str(row.get("Elective", "0")).strip()
         self.is_elective = flag in ("1", "true", "True", "YES", "yes")
 
+
 # --- Scheduler ---
 class ExamScheduler:
     def __init__(self, rooms_file, faculty_file, merged_courses_file="final_merged_courses.csv", start_date=DEFAULT_START_DATE):
@@ -89,23 +99,16 @@ class ExamScheduler:
         self.groups = sorted(list(self.courses.keys()))
 
         # scheduling state
-        self.room_remaining = {}  # date -> slot -> room -> remaining seats
+        self.room_remaining = {}
         self.group_daily = {}
         self.global_daily = {}
         self.used_rooms = {}
-
-        # room_courses to track which courses are occupying a room at date+slot
-        # structure: room_courses[date][slot][room_id] = set(course_codes)
-        self.room_courses = {}
 
         self.scheduled = []
         self.unscheduled = []
         self.invig_assignments = []
         self._inv_idx = 0
 
-    # =============================================================
-    # ROOM LOADING (half capacity + EXTRA SEAT ADDED)
-    # =============================================================
     def _load_rooms(self):
         rooms = []
         for _, r in self.rooms_df.iterrows():
@@ -115,11 +118,7 @@ class ExamScheduler:
             try:
                 cap = int(cap_raw)
             except:
-                cap_digits = re.sub(r"[^\d]", "", cap_raw)
-                try:
-                    cap = int(cap_digits) if cap_digits else 0
-                except:
-                    cap = 0
+                cap = 0
             if cap <= 0:
                 continue
             is_lab = ("lab" in t) or rid.upper().startswith(("L", "H"))
@@ -128,8 +127,7 @@ class ExamScheduler:
             # skip labs and libraries
             if is_lab or is_library:
                 continue
-            # usable = half capacity (rounded up) + 1 extra seat
-            usable = math.ceil(cap / 2) + 1   # EXTRA SEAT ADDED
+            usable = math.ceil(cap / 2)
             rooms.append({
                 "Room_ID": rid,
                 "Type": t,
@@ -140,38 +138,44 @@ class ExamScheduler:
         rooms.sort(key=lambda x: (x["Usable"], x["Room_ID"]))
         return rooms
 
-    # =============================================================
-    # COURSE LOADING
-    # =============================================================
     def _load_courses(self):
+        """
+        Load all courses from single merged CSV and split into groups
+        using collapse_to_broad_group(). Assumes the merged CSV has a
+        'source_file' column (Format 2 values like 'CSE_1_A' or 'DSAI_7').
+        """
         df = pd.read_csv(self.merged_courses_file)
         out = {}
+        # If source_file column missing, try to infer fallback
         if "source_file" not in df.columns:
             if "Group" in df.columns:
                 df["source_file"] = df["Group"]
             elif "group" in df.columns:
                 df["source_file"] = df["group"]
             else:
+                # everything into a single group
                 df["source_file"] = "All"
 
+        # collapse and create Course objects
         for src in df["source_file"].unique():
             broad = collapse_to_broad_group(src)
             sub = df[df["source_file"] == src]
-            out.setdefault(broad, [])
-            for _, row in sub.iterrows():
+            # ensure list exists for the broad group
+            if broad not in out:
+                out[broad] = []
+            for _, r in sub.iterrows():
                 try:
-                    students = int(str(row.get("Students", 0)))
+                    students = int(str(r.get("Students", 0)))
                 except:
                     students = 0
+                # only include positive-student courses
                 if students > 0:
-                    out[broad].append(Course(row, broad))
+                    out[broad].append(Course(r, broad))
+        # sort each group's courses (big -> small)
         for g in out:
             out[g].sort(key=lambda c: (-c.students, c.code))
         return out
 
-    # =============================================================
-    # Ensure date/slot data structures exist (and room_courses)
-    # =============================================================
     def _ensure_date(self, date):
         if date not in self.room_remaining:
             self.room_remaining[date] = {s: {r["Room_ID"]: r["Usable"] for r in self.rooms} for s in SLOT_LABELS}
@@ -181,12 +185,6 @@ class ExamScheduler:
             self.group_daily[date] = {g: 0 for g in self.groups}
         if date not in self.global_daily:
             self.global_daily[date] = 0
-        # ensure room_courses structure
-        if date not in self.room_courses:
-            self.room_courses[date] = {}
-        for s in SLOT_LABELS:
-            if s not in self.room_courses[date]:
-                self.room_courses[date][s] = {r["Room_ID"]: set() for r in self.rooms}
 
     def _ordered(self, ids, remaining):
         if ROOM_SORT_MODE == "small-first":
@@ -194,11 +192,7 @@ class ExamScheduler:
         else:
             return sorted(ids, key=lambda rid: (-remaining.get(rid, 0), rid))
 
-    # =============================================================
-    # ALLOCATE ROOMS — with max 2 courses per room rule
-    # Note: now this method accepts course_code to enforce the 2-course rule
-    # =============================================================
-    def _alloc_rooms(self, date, slot, need, course_code):
+    def _alloc_rooms(self, date, slot, need):
         remaining = self.room_remaining[date][slot]
         normal_ids = [r["Room_ID"] for r in self.rooms if not r["IsHall"]]
         hall_ids = [r["Room_ID"] for r in self.rooms if r["IsHall"]]
@@ -207,12 +201,6 @@ class ExamScheduler:
             alloc = []
             total = 0
             for rid in self._ordered(candidates, remaining):
-                # Skip if this room already has 2 different courses
-                existing_courses = self.room_courses[date][slot].get(rid, set())
-                # If the room already contains the same course_code, that's okay (further seats for same course)
-                # but if it contains >=2 distinct courses and course_code not one of them, skip
-                if len(existing_courses) >= 2 and course_code not in existing_courses:
-                    continue
                 avail = remaining.get(rid, 0)
                 usable_cap = self.room_by_id[rid]["Usable"]
                 avail = min(avail, usable_cap)
@@ -233,48 +221,33 @@ class ExamScheduler:
             alloc = try_allocate([rid for rid in normal_ids + hall_ids if remaining.get(rid, 0) > 0])
             return alloc
         else:
-            alloc = try_allocate([rid for rid in normal_ids + hall_ids if remaining.get(rid, 0) > 0])
-            return alloc
+            all_ids = [rid for rid in normal_ids + hall_ids if remaining.get(rid, 0) > 0]
+            return try_allocate(all_ids)
 
-    # =============================================================
-    # Book allocation and record the course in room_courses
-    # =============================================================
-    def _book_alloc(self, date, slot, alloc, course_code):
+    def _book_alloc(self, date, slot, alloc):
         for rid, cnt in alloc:
             usable_cap = self.room_by_id[rid]["Usable"]
             safe_cnt = min(cnt, usable_cap)
             self.room_remaining[date][slot][rid] -= safe_cnt
             self.used_rooms[date][slot].add(rid)
-            # record course in this room
-            self.room_courses[date][slot][rid].add(course_code)
 
-    # =============================================================
-    # Place merged course (code = course code)
-    # =============================================================
     def _place_merged_course(self, code, title, students, groups_set, date, slot):
-        # Basic daily constraints
         if self.global_daily[date] >= MAX_GLOBAL_EXAMS_PER_DAY:
             return False
         for g in groups_set:
             if self.group_daily[date][g] >= MAX_EXAMS_PER_GROUP_PER_DAY:
                 return False
-
-        alloc = self._alloc_rooms(date, slot, students, code)
+        alloc = self._alloc_rooms(date, slot, students)
         if alloc is None:
             return False
-
-        # sanitize then book
         sanitized = []
         for rid, cnt in alloc:
             usable_cap = self.room_by_id[rid]["Usable"]
             sanitized.append((rid, min(cnt, usable_cap)))
-
-        self._book_alloc(date, slot, sanitized, code)
-
+        self._book_alloc(date, slot, sanitized)
         for g in groups_set:
             self.group_daily[date][g] += 1
         self.global_daily[date] += 1
-
         alloc_text = "; ".join([f"{rid}:{cnt}" for rid, cnt in sanitized])
         self.scheduled.append({
             "Date": date.strftime("%Y-%m-%d"),
@@ -287,9 +260,6 @@ class ExamScheduler:
         })
         return True
 
-    # =============================================================
-    # Elective planning functions (kept as before)
-    # =============================================================
     def _plan_electives_by_semester(self):
         pool = {}
         for g in self.groups:
@@ -304,322 +274,67 @@ class ExamScheduler:
                     pool[sem][c.code]["groups"].add(g)
         return pool
 
+    def _schedule_elective_block(self, sem, electives, groups_for_sem, start_day_offset, preferred_slot_index):
+        day = start_day_offset
+        while day < 300:
+            date = self.start_date + timedelta(days=day)
+            self._ensure_date(date)
+            if self.global_daily[date] >= MAX_GLOBAL_EXAMS_PER_DAY:
+                day += 1
+                continue
+            if any(self.group_daily[date][g] >= MAX_EXAMS_PER_GROUP_PER_DAY for g in groups_for_sem):
+                day += 1
+                continue
+            slot = SLOT_LABELS[preferred_slot_index % len(SLOT_LABELS)]
+            total_students = sum(c.students for c in electives)
+            combined_alloc = self._alloc_rooms(date, slot, total_students)
+            if combined_alloc is None:
+                day += 1
+                continue
+            sanitized = []
+            for rid, cnt in combined_alloc:
+                usable_cap = self.room_by_id[rid]["Usable"]
+                sanitized.append((rid, min(cnt, usable_cap)))
+            self._book_alloc(date, slot, sanitized)
+            self.global_daily[date] += 1
+            for g in groups_for_sem:
+                self.group_daily[date][g] += 1
+
+            ordered_rooms = [(rid, cnt) for rid, cnt in sanitized]
+            for c in electives:
+                need = c.students
+                per_elec_alloc = []
+                for rid, seats in ordered_rooms:
+                    if need <= 0:
+                        break
+                    take = min(need, seats)
+                    if take > 0:
+                        per_elec_alloc.append((rid, take))
+                        need -= take
+                alloc_text = "; ".join(f"{rid}:{cnt}" for rid, cnt in per_elec_alloc)
+                self.scheduled.append({
+                    "Date": date.strftime("%Y-%m-%d"),
+                    "Slot": slot,
+                    "Groups": c.group,
+                    "Course_Code": c.code,
+                    "Course_Title": c.title,
+                    "Students": c.students,
+                    "Allocations": alloc_text
+                })
+            return day + 1
+        return day
+
     def _remove_scheduled_electives_from_pool(self):
         for g in self.groups:
             self.courses[g] = [c for c in self.courses[g] if not c.is_elective]
 
-    def _assign_invigilators(self):
-        # Build index for scheduled
-        schedule_index = {}
-        for rec in self.scheduled:
-            key = (rec["Date"], rec["Slot"])
-            schedule_index.setdefault(key, []).append(rec)
+    def _all_done(self):
+        return all(len(self.courses[g]) == 0 for g in self.groups)
 
-        for d in sorted(self.used_rooms.keys()):
-            assigned_today = set()
-            date_str = d.strftime("%Y-%m-%d")
-
-            for slot in SLOT_LABELS:
-                rooms = sorted(list(self.used_rooms[d][slot]))
-                for rid in rooms:
-                    cap = self.room_by_id[rid]["Capacity"]
-                    k = invigilators_needed(cap)
-                    picks = []
-                    while len(picks) < k and self.invigilators:
-                        name = self.invigilators[self._inv_idx % len(self.invigilators)]
-                        self._inv_idx += 1
-                        if name not in assigned_today:
-                            picks.append(name)
-                            assigned_today.add(name)
-
-                    exam_names = []
-                    key = (date_str, slot)
-                    recs = schedule_index.get(key, [])
-                    for rec in recs:
-                        alloc = self._parse_alloc(rec.get("Allocations", ""))
-                        if rid in alloc and alloc.get(rid, 0) > 0:
-                            code = rec.get("Course_Code", "")
-                            title = rec.get("Course_Title", "")
-                            if title and title != code:
-                                exam_names.append(f"{code} — {title}")
-                            else:
-                                exam_names.append(f"{code}")
-
-                    if not exam_names:
-                        for rec in self.scheduled:
-                            if rec.get("Date") == date_str and rec.get("Slot") == slot and rid in str(rec.get("Allocations", "")):
-                                code = rec.get("Course_Code", "")
-                                title = rec.get("Course_Title", "")
-                                if title and title != code:
-                                    exam_names.append(f"{code} — {title}")
-                                else:
-                                    exam_names.append(f"{code}")
-
-                    exam_text = " | ".join(sorted(set(exam_names))) if exam_names else ""
-
-                    self.invig_assignments.append({
-                        "Date": date_str,
-                        "Slot": slot,
-                        "Room_ID": rid,
-                        "Exam": exam_text,
-                        "Invigilators": ", ".join(picks)
-                    })
-
-    # =============================================================
-    # Helper parse/format allocation strings
-    # =============================================================
-    def _parse_alloc(self, s):
-        out = {}
-        if not s:
-            return out
-        parts = [p.strip() for p in str(s).split(";") if p.strip()]
-        for p in parts:
-            if ":" in p:
-                rid, cnt = p.split(":", 1)
-                try:
-                    out[rid.strip()] = out.get(rid.strip(), 0) + int(cnt.strip())
-                except:
-                    pass
-        return out
-
-    def _format_alloc(self, alloc_dict):
-        order = [r["Room_ID"] for r in self.rooms]
-        items = [(rid, alloc_dict[rid]) for rid in order if rid in alloc_dict and alloc_dict[rid] > 0]
-        if not items:
-            items = sorted(alloc_dict.items(), key=lambda x: x[0])
-        return "; ".join(f"{rid}:{cnt}" for rid, cnt in items)
-
-    # =============================================================
-    # Build merged schedule, room summary and grids
-    # =============================================================
-    def _build_merged(self):
-        rows = self.scheduled
-        groups = {}
-        title_map = {}
-
-        for r in rows:
-            k = (r["Date"], r["Slot"], r["Course_Code"])
-            title_map[r["Course_Code"]] = r.get("Course_Title", r["Course_Code"])
-
-            if k not in groups:
-                groups[k] = {"Students": 0, "Alloc": {}, "Groups": set()}
-
-            groups[k]["Students"] += int(r.get("Students", 0) or 0)
-            alloc_dict = self._parse_alloc(r.get("Allocations", ""))
-            for rid, cnt in alloc_dict.items():
-                if rid not in groups[k]["Alloc"]:
-                    groups[k]["Alloc"][rid] = 0
-                # If multiple scheduled rows map to same course+room, we add
-                groups[k]["Alloc"][rid] = groups[k]["Alloc"].get(rid, 0) + cnt
-
-            gs = str(r.get("Groups", "")).strip()
-            if gs:
-                for gname in [x.strip() for x in gs.split(",") if x.strip()]:
-                    groups[k]["Groups"].add(gname)
-
-        # enforce usable cap limits
-        for (date, slot, code), v in groups.items():
-            for rid in list(v["Alloc"].keys()):
-                if rid in self.room_by_id:
-                    v["Alloc"][rid] = min(v["Alloc"][rid], self.room_by_id[rid]["Usable"])
-
-        merged_rows = []
-        for (date, slot, code), v in sorted(groups.items()):
-            merged_rows.append({
-                "Date": date,
-                "Slot": slot,
-                "Course_Code": code,
-                "Students": v["Students"],
-                "Allocations": self._format_alloc(v["Alloc"]),
-                "Groups": ", ".join(sorted(v["Groups"])) if v["Groups"] else ""
-            })
-
-        legend = sorted([(code, title) for code, title in title_map.items()], key=lambda x: x[0])
-        return pd.DataFrame(merged_rows), pd.DataFrame(legend, columns=["Course_Code", "Course_Title"])
-
-    def _build_grid(self, merged_df):
-        dates = list(merged_df["Date"].unique())
-        grid = pd.DataFrame(index=SLOT_LABELS, columns=dates)
-        for d in dates:
-            for s in SLOT_LABELS:
-                subset = merged_df[(merged_df["Date"] == d) & (merged_df["Slot"] == s)]
-                if subset.empty:
-                    grid.at[s, d] = ""
-                else:
-                    codes = subset["Course_Code"].tolist()
-                    grid.at[s, d] = ", ".join(codes)
-        return grid
-
-    def _build_room_summary(self):
-        summary = {}
-        for rec in self.scheduled:
-            alloc = self._parse_alloc(rec["Allocations"])
-            for rid, cnt in alloc.items():
-                if rid not in summary:
-                    summary[rid] = {"Room_ID": rid, "Exams": 0, "Students": 0}
-                summary[rid]["Exams"] += 1
-                summary[rid]["Students"] += cnt
-        for r in self.rooms:
-            rid = r["Room_ID"]
-            if rid not in summary:
-                summary[rid] = {"Room_ID": rid, "Exams": 0, "Students": 0}
-        return pd.DataFrame(sorted(summary.values(), key=lambda x: x["Room_ID"]))
-
-    def _build_daily_invigilation_plan(self):
-        rows = []
-        for rec in self.invig_assignments:
-            rows.append({
-                "Date": rec["Date"],
-                "Slot": rec["Slot"],
-                "Room": rec["Room_ID"],
-                "Exam": rec["Exam"],
-                "Invigilators": rec["Invigilators"]
-            })
-        if not rows:
-            return pd.DataFrame(columns=["Date", "Slot", "Room", "Exam", "Invigilators"])
-        df = pd.DataFrame(rows).sort_values(by=["Date", "Slot", "Room"])
-        return df
-
-    def _convert_dates_to_day_labels(self, df):
-        if df is None or "Date" not in df.columns:
-            return df
-        real_dates = sorted({rec["Date"] for rec in self.scheduled})
-        day_map = {date: f"Day{idx+1}" for idx, date in enumerate(real_dates)}
-        df2 = df.copy()
-        df2["Date"] = df2["Date"].map(day_map).fillna(df2["Date"])
-        return df2
-
-    # =============================================================
-    # Excel formatting helper
-    # =============================================================
-    def _fmt(self, file):
-        thin = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
-        gray = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
-        wb = load_workbook(file)
-        for s in wb.sheetnames:
-            ws = wb[s]
-            for row in ws.iter_rows():
-                for cell in row:
-                    cell.border = thin
-                    if cell.row == 1 or cell.column == 1:
-                        cell.fill = gray
-                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            for col in ws.columns:
-                mx = 12
-                for cell in col:
-                    if cell.value:
-                        mx = max(mx, len(str(cell.value)))
-                ws.column_dimensions[col[0].column_letter].width = min(mx + 4, 70)
-            ws.row_dimensions[1].height = 24
-        wb.save(file)
-
-    # =============================================================
-    # Export everything to Excel, with proportional Course_Distribution
-    # =============================================================
-
-
-
-    def export(self, out="exam_timetables.xlsx", uns="unscheduled_exams.xlsx"):
-        merged_df, legend_df = self._build_merged()
-
-        # Convert dates to Day labels
-        merged_df_day_raw = self._convert_dates_to_day_labels(merged_df)
-
-        # --------------------------
-        # PROPORTIONAL DISTRIBUTION
-        # --------------------------
-        def proportional_distribution(df_input):
-            df = df_input.copy()
-            rows_out = []
-
-            for _, row in df.iterrows():
-                alloc_str = row.get("Allocations", "")
-                date_i = row.get("Date")
-                slot_i = row.get("Slot")
-
-                # Parse room allocations
-                alloc = {}
-                for p in [x.strip() for x in str(alloc_str).split(";") if x.strip()]:
-                    if ":" in p:
-                        rid, cnt = p.split(":", 1)
-                        try:
-                            alloc[rid.strip()] = int(cnt.strip())
-                        except:
-                            alloc[rid.strip()] = 0
-
-                # All courses sharing the same date+slot
-                same_slot = df[(df["Date"] == date_i) & (df["Slot"] == slot_i)]
-                total_by_course = {
-                    r["Course_Code"]: int(r.get("Students", 0))
-                    for _, r in same_slot.iterrows()
-                }
-
-                total_registered = sum(total_by_course.values()) or 1
-
-                # Proportional distribution room-wise
-                dist_parts = []
-                for rid, seat_count in alloc.items():
-                    sub = []
-                    for cc, reg in total_by_course.items():
-                        share = round((reg / total_registered) * seat_count)
-                        sub.append(f"{cc}={share}")
-                    dist_parts.append(f"{rid}: " + ", ".join(sub))
-
-                row_new = row.copy()
-                row_new["Allocation"] = "; ".join(dist_parts)
-                rows_out.append(row_new)
-
-            return pd.DataFrame(rows_out)
-
-        # APPLY proportional distribution
-        merged_df_with_dist = proportional_distribution(merged_df)
-
-        # Convert dates → Day labels AFTER adding distribution
-        merged_df_with_dist_day = self._convert_dates_to_day_labels(merged_df_with_dist)
-
-        # REMOVE Allocations column completely
-        if "Allocations" in merged_df_with_dist_day.columns:
-            merged_df_with_dist_day = merged_df_with_dist_day.drop(columns=["Allocations"])
-
-        # Build timetable grid from final df
-        grid_df = self._build_grid(merged_df_with_dist_day)
-
-        # Room summary
-        room_summary = self._build_room_summary()
-
-        # Invigilation plans
-        daily_plan = self._build_daily_invigilation_plan()
-        daily_plan = self._convert_dates_to_day_labels(daily_plan)
-
-        invig_raw = pd.DataFrame(self.invig_assignments)
-        if not invig_raw.empty:
-            invig_raw = invig_raw.sort_values(by=["Date", "Slot", "Room_ID"])
-            invig_raw = self._convert_dates_to_day_labels(invig_raw)
-
-        # Write Excel
-        with pd.ExcelWriter(out, engine="openpyxl") as w:
-            merged_df_with_dist_day.to_excel(w, sheet_name="Merged", index=False)
-            grid_df.to_excel(w, sheet_name="Grid", index=True)
-            legend_df.to_excel(w, sheet_name="Legend", index=False)
-            room_summary.to_excel(w, sheet_name="Room_Summary", index=False)
-            daily_plan.to_excel(w, sheet_name="Daily_Invigilation_Plan", index=False)
-            invig_raw.to_excel(w, sheet_name="Invigilation", index=False)
-
-        # Final formatting
-        self._fmt(out)
-
-        # Save unscheduled file
-        if self.unscheduled:
-            pd.DataFrame(self.unscheduled).to_excel(uns, index=False)
-
-
-    # =============================================================
-    # Scheduler controller: generate the schedule
-    # =============================================================
     def generate(self):
-        # Build student merged courses into merged blocks like earlier logic
+        # Elective blocks first
         pool = self._plan_electives_by_semester()
-        semesters = sorted([k for k in pool.keys()], key=lambda x: int(x) if str(x).isdigit() else x)
+        semesters = sorted(pool.keys(), key=lambda x: int(x))
         day_cursor = 0
         for sem in semesters:
             course_blocks = pool[sem]
@@ -632,13 +347,10 @@ class ExamScheduler:
             for slot, items in zip([SLOT_LABELS[0], SLOT_LABELS[1]], [morning_items, afternoon_items]):
                 for code, block in items:
                     total_students = sum(c.students for c in block["electives"])
-                    if total_students <= 0:
-                        continue
-                    # try allocate in this date+slot
-                    alloc = self._alloc_rooms(date, slot, total_students, code)
+                    alloc = self._alloc_rooms(date, slot, total_students)
                     if alloc is None:
                         other_slot = SLOT_LABELS[1] if slot == SLOT_LABELS[0] else SLOT_LABELS[0]
-                        alloc = self._alloc_rooms(date, other_slot, total_students, code)
+                        alloc = self._alloc_rooms(date, other_slot, total_students)
                         if alloc is None:
                             continue
                         slot_used = other_slot
@@ -648,8 +360,9 @@ class ExamScheduler:
                     for rid, cnt in alloc:
                         usable_cap = self.room_by_id[rid]["Usable"]
                         sanitized.append((rid, min(cnt, usable_cap)))
-                    self._book_alloc(date, slot_used, sanitized, code)
+                    self._book_alloc(date, slot_used, sanitized)
                     groups_set = block["groups"]
+                    total_students = sum(c.students for c in block["electives"])
                     alloc_text = "; ".join(f"{rid}:{cnt}" for rid, cnt in sanitized)
                     self.scheduled.append({
                         "Date": date.strftime("%Y-%m-%d"),
@@ -663,15 +376,14 @@ class ExamScheduler:
             involved_groups = set()
             for _, block in course_items:
                 involved_groups.update(block["groups"])
-            if involved_groups:
-                for g in involved_groups:
-                    self.group_daily[date][g] += 1
+            for g in involved_groups:
+                self.group_daily[date][g] += 1
             self.global_daily[date] += 1
             day_cursor += 1
 
         self._remove_scheduled_electives_from_pool()
 
-        # Merge regular courses (non-electives)
+        # Merge regular courses with same code across groups
         merged_regular = {}
         for g in self.groups:
             for c in self.courses[g]:
@@ -697,7 +409,6 @@ class ExamScheduler:
             i = 0
             while i < len(pending) and placed_today < MAX_GLOBAL_EXAMS_PER_DAY:
                 exam = pending[i]
-                # group daily constraint
                 if any(self.group_daily[date][g] >= MAX_EXAMS_PER_GROUP_PER_DAY for g in exam["groups"]):
                     i += 1
                     continue
@@ -729,10 +440,293 @@ class ExamScheduler:
 
         self._assign_invigilators()
 
+    def _assign_invigilators(self):
+        """
+        Robust invigilator assignment:
+          - For each used room per date+slot, build the full list of exams
+            scheduled in that room (Course_Code — Course_Title).
+          - Assign invigilators as before.
+        """
+        # Build a quick index: (date_str, slot) -> list of scheduled recs
+        schedule_index = {}
+        for rec in self.scheduled:
+            key = (rec["Date"], rec["Slot"])
+            schedule_index.setdefault(key, []).append(rec)
+
+        for d in sorted(self.used_rooms.keys()):
+            assigned_today = set()
+            date_str = d.strftime("%Y-%m-%d")
+
+            for slot in SLOT_LABELS:
+                rooms = sorted(list(self.used_rooms[d][slot]))
+                for rid in rooms:
+                    cap = self.room_by_id[rid]["Capacity"]
+                    k = invigilators_needed(cap)
+
+                    # pick invigilators (avoid duplicates same day)
+                    picks = []
+                    while len(picks) < k and self.invigilators:
+                        name = self.invigilators[self._inv_idx % len(self.invigilators)]
+                        self._inv_idx += 1
+                        if name not in assigned_today:
+                            picks.append(name)
+                            assigned_today.add(name)
+
+                    # Build Exam list for this room by checking all scheduled recs for this date+slot
+                    exam_names = []
+                    key = (date_str, slot)
+                    recs = schedule_index.get(key, [])
+                    for rec in recs:
+                        alloc = self._parse_alloc(rec.get("Allocations", ""))
+                        if rid in alloc and alloc.get(rid, 0) > 0:
+                            code = rec.get("Course_Code", "")
+                            title = rec.get("Course_Title", "")
+                            if title and title != code:
+                                exam_names.append(f"{code} — {title}")
+                            else:
+                                exam_names.append(f"{code}")
+
+                    # If somehow no exam found (shouldn't happen) fall back to codes matching allocations
+                    if not exam_names:
+                        # brute-force: search scheduled recs for this date+slot whose 'Allocations' contains rid
+                        for rec in self.scheduled:
+                            if rec.get("Date") == date_str and rec.get("Slot") == slot and rid in str(rec.get("Allocations", "")):
+                                code = rec.get("Course_Code", "")
+                                title = rec.get("Course_Title", "")
+                                if title and title != code:
+                                    exam_names.append(f"{code} — {title}")
+                                else:
+                                    exam_names.append(f"{code}")
+
+                    exam_text = " | ".join(sorted(set(exam_names))) if exam_names else ""
+
+                    self.invig_assignments.append({
+                        "Date": date_str,
+                        "Slot": slot,
+                        "Room_ID": rid,
+                        "Exam": exam_text,
+                        "Invigilators": ", ".join(picks)
+                    })
+
+
+    def _fmt(self, file):
+        thin = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
+        gray = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+        wb = load_workbook(file)
+        for s in wb.sheetnames:
+            ws = wb[s]
+            for row in ws.iter_rows():
+                for cell in row:
+                    cell.border = thin
+                    if cell.row == 1 or cell.column == 1:
+                        cell.fill = gray
+                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            for col in ws.columns:
+                mx = 12
+                for cell in col:
+                    if cell.value:
+                        mx = max(mx, len(str(cell.value)))
+                ws.column_dimensions[col[0].column_letter].width = min(mx + 4, 70)
+            ws.row_dimensions[1].height = 24
+        wb.save(file)
+
+    def _parse_alloc(self, s):
+        out = {}
+        if not s:
+            return out
+        parts = [p.strip() for p in str(s).split(";") if p.strip()]
+        for p in parts:
+            if ":" in p:
+                rid, cnt = p.split(":", 1)
+                try:
+                    out[rid.strip()] = out.get(rid.strip(), 0) + int(cnt.strip())
+                except:
+                    pass
+        return out
+
+    def _format_alloc(self, alloc_dict):
+        order = [r["Room_ID"] for r in self.rooms]
+        items = [(rid, alloc_dict[rid]) for rid in order if rid in alloc_dict and alloc_dict[rid] > 0]
+        if not items:
+            items = sorted(alloc_dict.items(), key=lambda x: x[0])
+        return "; ".join(f"{rid}:{cnt}" for rid, cnt in items)
+
+    def _build_merged(self):
+        rows = self.scheduled
+        groups = {}
+        title_map = {}
+
+        for r in rows:
+            k = (r["Date"], r["Slot"], r["Course_Code"])
+            title_map[r["Course_Code"]] = r.get("Course_Title", r["Course_Code"])
+
+            if k not in groups:
+                groups[k] = {"Students": 0, "Alloc": {}, "Groups": set()}
+
+            groups[k]["Students"] += int(r.get("Students", 0) or 0)
+            alloc_dict = self._parse_alloc(r.get("Allocations", ""))
+            for rid, cnt in alloc_dict.items():
+                if rid not in groups[k]["Alloc"]:
+                    groups[k]["Alloc"][rid] = 0
+                if len(groups[k]["Groups"]) > 1:
+                    groups[k]["Alloc"][rid] = max(groups[k]["Alloc"].get(rid, 0), cnt)
+                else:
+                    groups[k]["Alloc"][rid] = groups[k]["Alloc"].get(rid, 0) + cnt
+
+            gs = str(r.get("Groups", "")).strip()
+            if gs:
+                for gname in [x.strip() for x in gs.split(",") if x.strip()]:
+                    groups[k]["Groups"].add(gname)
+
+        for (date, slot, code), v in groups.items():
+            for rid in list(v["Alloc"].keys()):
+                if rid in self.room_by_id:
+                    v["Alloc"][rid] = min(v["Alloc"][rid], self.room_by_id[rid]["Usable"])
+
+        merged_rows = []
+        for (date, slot, code), v in sorted(groups.items()):
+            merged_rows.append({
+                "Date": date,
+                "Slot": slot,
+                "Course_Code": code,
+                "Students": v["Students"],
+                "Allocations": self._format_alloc(v["Alloc"]),
+                "Groups": ", ".join(sorted(v["Groups"])) if v["Groups"] else ""
+            })
+
+        legend = sorted([(code, title) for code, title in title_map.items()], key=lambda x: x[0])
+        return pd.DataFrame(merged_rows), pd.DataFrame(legend, columns=["Course_Code", "Course_Title"])
+
+    def _build_grid(self, merged_df):
+        # merged_df expected to contain 'Date' column (DayX labels)
+        dates = list(merged_df["Date"].unique())
+        # keep original order if Day1..DayN already in proper order
+        grid = pd.DataFrame(index=SLOT_LABELS, columns=dates)
+        for d in dates:
+            for s in SLOT_LABELS:
+                subset = merged_df[(merged_df["Date"] == d) & (merged_df["Slot"] == s)]
+                if subset.empty:
+                    grid.at[s, d] = ""
+                else:
+                    codes = subset["Course_Code"].tolist()
+                    grid.at[s, d] = ", ".join(codes)
+        return grid
+
+    # --- Room Summary (Feature #4) ---
+    def _build_room_summary(self):
+        """
+        Generates room-level summary:
+          - Total exams scheduled in each room
+          - Total students seated
+        """
+        summary = {}
+
+        for rec in self.scheduled:
+            alloc = self._parse_alloc(rec["Allocations"])
+            for rid, cnt in alloc.items():
+                if rid not in summary:
+                    summary[rid] = {"Room_ID": rid, "Exams": 0, "Students": 0}
+                summary[rid]["Exams"] += 1
+                summary[rid]["Students"] += cnt
+
+        # ensure every room appears (even if 0)
+        for r in self.rooms:
+            rid = r["Room_ID"]
+            if rid not in summary:
+                summary[rid] = {"Room_ID": rid, "Exams": 0, "Students": 0}
+
+        return pd.DataFrame(sorted(summary.values(), key=lambda x: x["Room_ID"]))
+
+    # --- Daily Invigilation Plan (Feature #9) ---
+    def _build_daily_invigilation_plan(self):
+        """
+        Creates a friendly sheet: Day-wise → Slot-wise → Room-wise details.
+        """
+        rows = []
+
+        for rec in self.invig_assignments:
+            rows.append({
+                "Date": rec["Date"],
+                "Slot": rec["Slot"],
+                "Room": rec["Room_ID"],
+                "Exam": rec["Exam"],
+                "Invigilators": rec["Invigilators"]
+            })
+
+        if not rows:
+            return pd.DataFrame(columns=["Date", "Slot", "Room", "Exam", "Invigilators"])
+
+        df = pd.DataFrame(rows).sort_values(by=["Date", "Slot", "Room"])
+        return df
+
+    # --- Convert real dates to Day1/Day2 labels for outputs ---
+    def _convert_dates_to_day_labels(self, df):
+        """
+        Converts 'YYYY-MM-DD' dates in df['Date'] to Day1, Day2, ...
+        based on sorted unique real dates (chronological order).
+        This returns a copy of df with Date replaced by Day labels.
+        """
+        if df is None or "Date" not in df.columns:
+            return df
+        # gather chronological order from actual scheduled dates stored internally
+        # Build set of real dates from scheduled records
+        real_dates = sorted({rec["Date"] for rec in self.scheduled})
+        day_map = {date: f"Day{idx+1}" for idx, date in enumerate(real_dates)}
+        df2 = df.copy()
+        df2["Date"] = df2["Date"].map(day_map).fillna(df2["Date"])
+        return df2
+
+    def export(self, out="exam_timetables.xlsx", uns="unscheduled_exams.xlsx"):
+        # Build merged and legend (these have real-date strings in 'Date' column)
+        merged_df, legend_df = self._build_merged()
+
+        # Convert merged_df dates to Day labels
+        merged_df_day = self._convert_dates_to_day_labels(merged_df)
+
+        # Build grid using Day-labeled merged_df
+        grid_df = self._build_grid(merged_df_day)
+
+        # Build additional reports and convert their Date columns to Day labels
+        room_summary = self._build_room_summary()
+
+        daily_plan = self._build_daily_invigilation_plan()
+        daily_plan = self._convert_dates_to_day_labels(daily_plan)
+
+        invig_raw = pd.DataFrame(self.invig_assignments).sort_values(by=["Date", "Slot", "Room_ID"]) if self.invig_assignments else pd.DataFrame(columns=["Date","Slot","Room_ID","Exam","Invigilators"])
+        invig_raw = self._convert_dates_to_day_labels(invig_raw)
+
+        # Rename grid columns to Day labels if they are real dates or already Day labels
+        grid_cols = list(grid_df.columns)
+        # If grid_cols are real dates, map them to Day labels using the same mapping as merged_df_day
+        # But since merged_df_day already has Day labels in 'Date', grid_df columns are Day labels
+        # We'll leave them as-is; ensure they are strings
+        grid_df.columns = [str(c) for c in grid_df.columns]
+
+        with pd.ExcelWriter(out, engine="openpyxl") as w:
+            # Primary sheets (Date columns in these sheets now show DayX)
+            merged_df_day.to_excel(w, sheet_name="Merged", index=False)
+            grid_df.to_excel(w, sheet_name="Grid", index=True)
+            legend_df.to_excel(w, sheet_name="Legend", index=False)
+
+            # Room summary (no Date column)
+            room_summary.to_excel(w, sheet_name="Room_Summary", index=False)
+
+            # Daily invig (Day labels)
+            daily_plan.to_excel(w, sheet_name="Daily_Invigilation_Plan", index=False)
+
+            # Raw invig assignments
+            invig_raw.to_excel(w, sheet_name="Invigilation", index=False)
+
+        self._fmt(out)
+
+        if self.unscheduled:
+            pd.DataFrame(self.unscheduled).to_excel(uns, index=False)
+
 # --- Example invocation ---
 def run_example():
+    # Files are in the same directory as exam.py per your workspace
     rooms = r"rooms.csv"
-    faculty = r"Faculty.csv"
+    faculty = r"Faculty.csv"               # capital F as in your folder
     merged_courses = r"final_merged_courses.csv"
 
     s = ExamScheduler(rooms_file=rooms, faculty_file=faculty, merged_courses_file=merged_courses)
