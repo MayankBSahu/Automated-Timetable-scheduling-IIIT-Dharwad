@@ -10,6 +10,11 @@ random.seed(42)
 
 days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 excluded = ["07:30-09:00", "10:30-10:45", "13:15-14:00","17:30-18:30"]
+# Tracks which course is using C004 in each slot (across all years/branches)
+c004_occupancy = {d: {} for d in days}   # day -> {slot -> course_code}
+# never allow any placement in these slots (hard ban)
+ABSOLUTELY_FORBIDDEN_SLOTS = {"07:30-09:00"}
+
 
 colors = [
     "FFB3BA","BAE1FF","BAFFC9","FFFFBA","FFD8BA","E3BAFF","D0BAFF","FFCBA4",
@@ -157,66 +162,38 @@ def free(tt, d, ex=False):
     if b: fb.append(b)
     return fb
 
-# ------------------------------------------------------------------
-# Helper: find a room free for a given block of slots
-# ------------------------------------------------------------------
-def pick_room_for_slots(room_candidates, day, slots_to_use, room_busy):
-    """
-    Return a room from room_candidates that is free for all requested slots
-    on given day according to room_busy.
-    """
-    for r in room_candidates:
-        if r not in room_busy:
-            room_busy[r] = {d: set() for d in days}
-
-        free = True
-        for s in slots_to_use:
-            if s in room_busy[r].get(day, set()):
-                free = False
-                break
-
-        if free:
-            return r
-
-    return None
-
 def alloc_specific(tt, busy, rm, room_busy, day, slots_to_use, f, code, typ, elec, labsd, course_usage,
-                   class_prefix=None, rr_state=None, hide_c004=False, year_tag=None):
+                   class_prefix=None, rr_state=None, hide_c004=False, skip_usage_check=False, ex=False, year_tag=None):
     for s_ in slots_to_use:
         if s_ not in slot_keys or tt.at[day, s_] != "":
             return False
 
-    # For electives: avoid clashes with elective times of *other* years
-    if elec and year_tag is not None:
-        for y, daymap in elective_slots_by_year.items():
-            if y == year_tag:
-                continue
-            if any(s_ in daymap.get(day, set()) for s_ in slots_to_use):
-                return False
-
-            
     if code not in course_usage[day]:
         course_usage[day][code] = {"L":0,"T":0,"P":0}
 
     usage = course_usage[day][code]
 
-# For electives: Do NOT treat P as a real lab hour
-    if typ == "P" and elec:
-    # Elective lab behaves like theory: allow unlimited placement
-        pass
-    else:
-        if typ == "P":
-            if usage["P"] >= 1:
-                return False
+    # For electives: Do NOT treat P as a real lab hour
+    if not skip_usage_check:
+        if typ == "P" and elec:
+            # elective lab behaves like theory — allow unlimited placement
+            pass
         else:
-            if (usage["L"] + usage["T"]) >= 1:
-                return False
+            if typ == "P":
+                if usage["P"] >= 1:
+                    return False
+            else:
+                if (usage["L"] + usage["T"]) >= 1:
+                    return False
+
+
     r = None
     if not elec:
         key = (code, typ)
         if key in rm:
             candidate = rm[key]
-            if candidate != "C004": 
+            # if candidate is C004 we still need to check cross-branch occupancy below
+            if candidate != "C004":
                 used = room_busy.get(day, {}).get(candidate, set())
                 if set(slots_to_use) & used:
                     return False
@@ -234,6 +211,15 @@ def alloc_specific(tt, busy, rm, room_busy, day, slots_to_use, f, code, typ, ele
                 return False
             rm[key] = r
 
+    # NEW: Block C004 if occupied by a different course for any requested slot
+    if r == "C004":
+        for s_ in slots_to_use:
+            occ = c004_occupancy.get(day, {}).get(s_)
+            if occ and occ != code:
+                # slot in C004 already taken by a different course
+                return False
+
+    # Commit the allocation to tt
     for s_ in slots_to_use:
         if is_combined_course(code, rm):
             if hide_c004:
@@ -254,11 +240,11 @@ def alloc_specific(tt, busy, rm, room_busy, day, slots_to_use, f, code, typ, ele
             if r and not elec:
                 if elec and typ == "P":
                     v = f"{code}(Lab)"
-                elif typ == "T": 
+                elif typ == "T":
                     v = f"{code}T ({r})"
-                elif typ == "P": 
+                elif typ == "P":
                     v = f"{code} (Lab-{r})"
-                else: 
+                else:
                     v = f"{code} ({r})"
             else:
                 if elec and typ == "P":
@@ -277,17 +263,17 @@ def alloc_specific(tt, busy, rm, room_busy, day, slots_to_use, f, code, typ, ele
         labsd.add(day)
     course_usage[day][code][typ] += 1
 
-    # Record elective L/T slots for this year so others avoid them
-    if elec and year_tag is not None and typ != "P":
-        year_map = elective_slots_by_year.setdefault(year_tag, {d: set() for d in days})
-        year_map[day].update(slots_to_use)
+    # NEW: mark C004 occupancy so other branches see it
+    if r == "C004":
+        for s_ in slots_to_use:
+            c004_occupancy.setdefault(day, {})[s_] = code
 
     return True
 
 
 
 def alloc(tt, busy, rm, room_busy, d, f, code, h, typ="L", elec=False, labsd=set(), ex=False,
-          preferred_slots=None, course_usage=None, class_prefix=None, rr_state=None, hide_c004=False, year_tag=None):
+          preferred_slots=None, course_usage=None, class_prefix=None, rr_state=None, hide_c004=False,year_tag=None):
     if course_usage is None:
         course_usage = {dd:{} for dd in days}
     if code not in course_usage[d]:
@@ -296,11 +282,10 @@ def alloc(tt, busy, rm, room_busy, d, f, code, h, typ="L", elec=False, labsd=set
     usage = course_usage[d][code]
 
     if typ == "P":
-
-        if usage["P"] >= 1: 
+        if usage["P"] >= 1:
             return False
     else:
-        if (usage["L"] + usage["T"]) >= 1: 
+        if (usage["L"] + usage["T"]) >= 1:
             return False
 
     if preferred_slots:
@@ -308,12 +293,7 @@ def alloc(tt, busy, rm, room_busy, d, f, code, h, typ="L", elec=False, labsd=set
         if pref_day == d:
             total = sum(slot_dur[s] for s in pref_slots)
             if total + 1e-9 >= h:
-                if alloc_specific(
-                    tt, busy, rm, room_busy,
-                    pref_day, pref_slots, f, code, typ, elec, labsd, course_usage,
-                    class_prefix=class_prefix, rr_state=rr_state,
-                    hide_c004=hide_c004, year_tag=year_tag
-                ):
+                if alloc_specific(tt, busy, rm, room_busy, pref_day, pref_slots, f, code, typ, elec, labsd, course_usage, class_prefix=class_prefix, rr_state=rr_state, hide_c004=hide_c004):
                     return True
 
     for blk in free(tt, d, ex):
@@ -322,17 +302,6 @@ def alloc(tt, busy, rm, room_busy, d, f, code, h, typ="L", elec=False, labsd=set
         for s_ in blk:
             use.append(s_); dur += slot_dur[s_]
             if dur + 1e-9 >= h: break
-        # For electives: avoid clashes with elective times of *other* years
-        if elec and year_tag is not None:
-            clash = False
-            for y, daymap in elective_slots_by_year.items():
-                if y == year_tag:
-                    continue
-                if any(s_ in daymap.get(d, set()) for s_ in use):
-                    clash = True
-                    break
-            if clash:
-                continue  # try next block            
         if not ex and any(s_ in excluded for s_ in use): continue
         if f and f in busy[d] and (set(use) & busy[d][f]): continue
 
@@ -354,13 +323,24 @@ def alloc(tt, busy, rm, room_busy, d, f, code, h, typ="L", elec=False, labsd=set
                 else:
                     candidates = room_candidates(lab=False, prefix=class_prefix, lab_prefix=None)
                     r = pick_room_for_slots(candidates, d, use, room_busy, rr_state_key=class_prefix, rr_state=rr_state)
-                
+
                 if r is None:
                     continue
                 rm[(code, typ)] = r
         else:
             r = None
 
+        # NEW: prevent C004 being used by a different course simultaneously
+        if r == "C004":
+            conflict = False
+            for s_ in use:
+                occ = c004_occupancy.get(d, {}).get(s_)
+                if occ and occ != code:
+                    conflict = True; break
+            if conflict:
+                continue
+
+        # commit allocation to cells
         for s_ in use:
             if is_combined_course(code, rm):
                 if hide_c004:
@@ -381,11 +361,11 @@ def alloc(tt, busy, rm, room_busy, d, f, code, h, typ="L", elec=False, labsd=set
                 if r and not elec:
                     if elec and typ == "P":
                         v = f"{code}(Lab)"
-                    elif typ == "T": 
+                    elif typ == "T":
                         v = f"{code}T ({r})"
-                    elif typ == "P": 
+                    elif typ == "P":
                         v = f"{code} (Lab-{r})"
-                    else: 
+                    else:
                         v = f"{code} ({r})"
                 else:
                     if elec and typ == "P":
@@ -395,6 +375,7 @@ def alloc(tt, busy, rm, room_busy, d, f, code, h, typ="L", elec=False, labsd=set
                     else:
                         v = code
             tt.at[d, s_] = v
+
         if f:
             busy[d].setdefault(f, set()).update(use)
         if r:
@@ -403,15 +384,15 @@ def alloc(tt, busy, rm, room_busy, d, f, code, h, typ="L", elec=False, labsd=set
             labsd.add(d)
         course_usage[d][code][typ] += 1
 
-        # Record elective L/T slots for this year so others avoid them
-        if elec and year_tag is not None and typ != "P":
-            year_map = elective_slots_by_year.setdefault(year_tag, {day: set() for day in days})
-            year_map[d].update(use)
+        # NEW: mark C004 occupancy
+        if r == "C004":
+            for s_ in use:
+                c004_occupancy.setdefault(d, {})[s_] = code
 
         return True
 
-
     return False
+
 
 def get_all_valid_free_slots(tt):
     valid = []
@@ -442,91 +423,276 @@ def extract_contiguous_blocks(slot_list):
         blocks.append((cur_day, cur_slots))
     return blocks
 
-def try_allocate_chunk_from_block(tt, busy, rm, room_busy, labsd, course_usage,
-                                  code, faculty, typ, need, day, slots, class_prefix=None, rr_state=None,hide_c004=False, year_tag=None):
+def try_allocate_chunk_from_block(
+    tt, busy, rm, room_busy, labsd, course_usage,
+    code, faculty, typ, need, day, slots,
+    class_prefix=None, rr_state=None, hide_c004=False,
+    allow_excluded=False
+):
     n = len(slots)
+
+    best_sub = None
+    best_i = best_j = None
+    best_total = None
+
+    # 1️⃣ Find best contiguous slice
     for i in range(n):
-        accum = 0.0; sub = []
+        accum = 0.0
+        sub = []          # ✅ MUST be here
+
         for j in range(i, n):
-            sub.append(slots[j]); accum += slot_dur[slots[j]]
-            if accum + 1e-9 >= need:
-                for s_ in sub:
-                    if tt.at[day, s_] != "": break
-                else:
-                    ok = alloc_specific(
-                        tt, busy, rm, room_busy,
-                        day, sub, faculty, code, typ, False, labsd, course_usage,
-                        class_prefix=class_prefix, rr_state=rr_state,
-                        hide_c004=hide_c004, year_tag=year_tag
-                    )
-                    if ok:
-                        new_slots = slots[:i] + slots[j+1:]
-                        return new_slots
+            s_key = slots[j]
+
+            # 🚫 Hard-forbid excluded slots
+            if s_key in excluded and not allow_excluded:
                 break
+
+            sub.append(s_key)
+            accum += slot_dur[s_key]
+
+            if accum + 1e-9 >= need:
+                if all(tt.at[day, s_] == "" for s_ in sub):
+                    if best_sub is None or accum < best_total - 1e-9:
+                        best_sub = list(sub)
+                        best_i, best_j, best_total = i, j, accum
+                break
+
+    if best_sub is None:
+        return None, None
+
+    # 2️⃣ Allocate chosen slice
+    ok = alloc_specific(
+        tt, busy, rm, room_busy,
+        day, best_sub,
+        faculty, code, typ,
+        False, labsd, course_usage,
+        class_prefix=class_prefix,
+        rr_state=rr_state,
+        hide_c004=hide_c004
+    )
+
+    if not ok:
+        return None, None
+
+    new_slots = slots[:best_i] + slots[best_j + 1:]
+    return new_slots, best_sub
+
+
+
+
+def get_free_blocks_for_combined(tt):
+    """
+    Recompute all free (non-excluded) contiguous blocks for combined courses.
+    Returns list of (day, [slot_keys...]) where slots are free and contiguous.
+    """
+    blocks = []
+    for d in days:
+        cur = []
+        for s_ in slot_keys:
+            if s_ in excluded:
+                if cur:
+                    blocks.append((d, cur))
+                    cur = []
+                continue
+            if tt.at[d, s_] == "":
+                cur.append(s_)
+            else:
+                if cur:
+                    blocks.append((d, cur))
+                    cur = []
+        if cur:
+            blocks.append((d, cur))
+    return blocks
+
+def find_contiguous_slice(block_slots, need_hours):
+    """
+    Given a list of free slots on a single day, find a contiguous
+    sub-slice whose total duration >= need_hours. Returns the slice
+    (list of slot_keys) or None.
+    """
+    n = len(block_slots)
+    for i in range(n):
+        accum = 0.0
+        sub = []
+        for j in range(i, n):
+            s_ = block_slots[j]
+            accum += slot_dur[s_]
+            sub.append(s_)
+            if accum + 1e-9 >= need_hours:
+                return sub
     return None
 
-def assign_combined_precise_durations(tt, busy, rm, room_busy, labsd, course_usage, combined_core,
-                                      rr_state=None, hide_c004=False, year_tag=None):
+
+def assign_combined_precise_durations(
+    tt, busy, rm, room_busy, labsd, course_usage, combined_core,
+    rr_state=None, hide_c004=False,
+    combined_sync=None, year_tag=None, semester_half=None
+):
+    ALLOWED_LECTURE_CHUNKS = [1.5, 1.0]
+
+    print("SYNC DICT ID:", id(combined_sync), "YEAR:", year_tag)
     if not combined_core:
         return []
+
     combined_list = []
     chunks_map = {}
+
+    # ---------- BUILD CHUNKS ----------
     for c in combined_core:
         code = s(c.get("Course_Code", ""))
-        if not code: continue
+        if not code:
+            continue
+
         rm[(code, "L")] = "C004"
         rm[(code, "T")] = "C004"
         rm[(code, "P")] = "C004"
+
         L, T, P, _, _ = ltp(c.get("L-T-P-S-C", "0-0-0-0-0"))
+
         ch = []
+
         rem = float(L)
         while rem > 1e-9:
             if rem >= 1.5:
-                ch.append((1.5, "L")); rem -= 1.5
+                ch.append((1.5, "L"))
+                rem -= 1.5
             else:
-                ch.append((1.0, "L")); rem -= 1.0
+                ch.append((1.0, "L"))
+                rem -= 1.0
+
         rem = float(T)
         while rem > 1e-9:
-            ch.append((1.0, "T")); rem -= 1.0
+            ch.append((1.0, "T"))
+            rem -= 1.0
+
         rem = float(P)
         while rem > 1e-9:
             if rem >= 2.0:
-                ch.append((2.0, "P")); rem -= 2.0
+                ch.append((2.0, "P"))
+                rem -= 2.0
             elif rem >= 1.5:
-                ch.append((1.5, "P")); rem -= 1.5
+                ch.append((1.5, "P"))
+                rem -= 1.5
             else:
-                ch.append((1.0, "P")); rem -= 1.0
+                ch.append((1.0, "P"))
+                rem -= 1.0
+
         chunks_map[code] = sorted(ch, key=lambda x: -x[0])
         combined_list.append((code, c))
 
-    valid_slots = get_all_valid_free_slots(tt)
-    valid_blocks = extract_contiguous_blocks(valid_slots)
-    excluded_slots = get_all_excluded_free_slots(tt)
-    excluded_blocks = extract_contiguous_blocks(excluded_slots)
-    placed = []
+    combined_list.sort(key=lambda x: x[0])
+    placed_codes = []
 
+    # ---------- PLACEMENT ----------
     for code, c in combined_list:
-        chunks = chunks_map[code]; faculty = s(c.get("Faculty", ""))
+        faculty = s(c.get("Faculty", ""))
+        chunks = chunks_map[code]
+
+        sync_key = None
+        existing_sync = None
+        if combined_sync is not None and year_tag is not None:
+            sync_key = (year_tag, code)
+            existing_sync = combined_sync.get(sync_key)
+
+        new_sync_entries = []
         days_used = set()
-        for need, typ in chunks:
+
+        for idx, (need, typ) in enumerate(chunks):
             allocated = False
-            for idx, (day, slots) in enumerate(valid_blocks):
-                if day in days_used: continue
-                new_slots = try_allocate_chunk_from_block(tt, busy, rm, room_busy, labsd, course_usage,
-                                                          code, faculty, typ, need, day, slots,
-                                                          class_prefix="C0", rr_state=rr_state,hide_c004=hide_c004,year_tag=year_tag)
-                if new_slots is not None:
-                    valid_blocks[idx] = (day, new_slots); days_used.add(day); allocated = True; break
+
+            # ===== LECTURE-SPECIFIC LOGIC =====
+            if typ == "L":
+                remaining = need
+
+                while remaining > 1e-6:
+                    placed = False
+
+                    valid_slots = get_all_valid_free_slots(tt)
+                    valid_blocks = extract_contiguous_blocks(valid_slots)
+
+                    for chunk in ALLOWED_LECTURE_CHUNKS:
+                        if chunk > remaining + 1e-6:
+                            continue
+
+                        for day, slots in valid_blocks:
+                            if day in days_used:
+                                continue
+
+                            _, used_slots = try_allocate_chunk_from_block(
+                                tt, busy, rm, room_busy, labsd, course_usage,
+                                code, faculty, "L", chunk, day, slots,
+                                class_prefix="C0",
+                                rr_state=rr_state,
+                                hide_c004=hide_c004
+                            )
+
+                            if used_slots is not None:
+                                new_sync_entries.append(("L", day, used_slots))
+                                days_used.add(day)
+                                remaining -= chunk
+                                placed = True
+                                break
+
+                        if placed:
+                            break
+
+                    if not placed:
+                        break
+
+                allocated = True
+                continue   # ⛔ do NOT fall into mirror / generic logic
+
+            # ===== MIRROR LOGIC =====
+            if existing_sync is not None and idx < len(existing_sync):
+                sync_typ, sync_day, sync_slots = existing_sync[idx]
+                if sync_typ == typ:
+                    ok = alloc_specific(
+                        tt, busy, rm, room_busy,
+                        sync_day, sync_slots,
+                        None,
+                        code, typ, False, labsd, course_usage,
+                        class_prefix="C0",
+                        rr_state=rr_state,
+                        hide_c004=hide_c004
+                    )
+                    if ok:
+                        allocated = True
+                        days_used.add(sync_day)
+
+            # ===== NORMAL BLOCK SEARCH =====
             if not allocated:
-                for idx, (day, slots) in enumerate(excluded_blocks):
-                    if day in days_used: continue
-                    new_slots = try_allocate_chunk_from_block(tt, busy, rm, room_busy, labsd, course_usage,
-                                                              code, faculty, typ, need, day, slots,
-                                                              class_prefix="C0", rr_state=rr_state,hide_c004=hide_c004)
-                    if new_slots is not None:
-                        excluded_blocks[idx] = (day, new_slots); days_used.add(day); allocated = True; break
-        placed.append(code)
-    return placed
+                valid_slots = get_all_valid_free_slots(tt)
+                valid_blocks = extract_contiguous_blocks(valid_slots)
+
+                for day, slots in valid_blocks:
+                    if day in days_used:
+                        continue
+
+                    _, used_slots = try_allocate_chunk_from_block(
+                        tt, busy, rm, room_busy, labsd, course_usage,
+                        code, faculty, typ, need, day, slots,
+                        class_prefix="C0",
+                        rr_state=rr_state,
+                        hide_c004=hide_c004
+                    )
+
+                    if used_slots is not None:
+                        new_sync_entries.append((typ, day, used_slots))
+                        allocated = True
+                        days_used.add(day)
+                        break
+
+            if not allocated:
+                break
+
+        if sync_key and combined_sync is not None and existing_sync is None and new_sync_entries:
+            combined_sync[sync_key] = new_sync_entries
+
+        placed_codes.append(code)
+
+    return placed_codes
+
+
 
 color_avail = colors.copy(); random.shuffle(color_avail); color_map = {}
 def get_color_for_course(course_code):
@@ -538,61 +704,104 @@ def get_color_for_course(course_code):
     return color_map[k]
 
 def merge_and_color(ws, courses):
-    sc = 2; mc = ws.max_column; mr = ws.max_row
-    valid_course_codes = {s(x.get("Course_Code","")).replace("T","").strip().upper() for x in courses if s(x.get("Course_Code",""))}
-    valid_course_codes |= {f"ELECTIVE{i}" for i in range(1,60)}
-    for col in range(2, mc+1):
+    sc = 2
+    mc = ws.max_column
+    mr = ws.max_row
+
+    valid_course_codes = {
+        s(x.get("Course_Code", "")).replace("T", "").strip().upper()
+        for x in courses
+        if s(x.get("Course_Code", ""))
+    }
+    valid_course_codes |= {f"ELECTIVE{i}" for i in range(1, 60)}
+
+    # Header styling
+    for col in range(2, mc + 1):
         cell = ws.cell(2, col)
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.border = thin
-    for r in range(3, mr+1):
+
+    # Merge contiguous identical entries in each row
+    for r in range(3, mr + 1):
         c = sc
         while c <= mc:
             raw = ws.cell(r, c).value
             if raw is None or str(raw).strip() == "":
-                ws.cell(r, c).border = thin; c += 1; continue
-            val = str(raw).strip(); merge_cols = [c]
-            if "(" in val:
-                if "Lab" in val: expected = 2.0
-                elif val.endswith("T") or "T " in val or "T(" in val: expected = 1.0
-                else: expected = 1.5
-            else: expected = 1.5
-            slot_index = c - sc; total = 0.0
-            if 0 <= slot_index < len(slot_keys):
-                total = slot_dur[slot_keys[slot_index]]
+                ws.cell(r, c).border = thin
+                c += 1
+                continue
+
+            val = str(raw).strip()
+            merge_cols = [c]
+
+            # extend to all immediately-adjacent cells with same text
             next_col = c + 1
             while next_col <= mc:
                 next_raw = ws.cell(r, next_col).value
                 next_val = str(next_raw).strip() if next_raw is not None else ""
                 if next_val == val:
-                    sn_idx = next_col - sc
-                    if 0 <= sn_idx < len(slot_keys):
-                        total += slot_dur[slot_keys[sn_idx]]
                     merge_cols.append(next_col)
-                    if total + 1e-9 >= expected: break
                     next_col += 1
-                else: break
+                else:
+                    break
+
+            # actually merge the block if it spans >1 column
             if len(merge_cols) > 1:
-                ws.merge_cells(start_row=r, start_column=merge_cols[0], end_row=r, end_column=merge_cols[-1])
+                ws.merge_cells(
+                    start_row=r,
+                    start_column=merge_cols[0],
+                    end_row=r,
+                    end_column=merge_cols[-1]
+                )
+
+            # styling + colour
             cell = ws.cell(r, merge_cols[0])
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.alignment = Alignment(horizontal="center",
+                                       vertical="center",
+                                       wrap_text=True)
             cell.font = Font(bold=True)
+
             raw_course_name = val.split()[0] if val.split() else val
-            raw_course_name = raw_course_name.replace("T","").replace("(","").strip().upper()
-            fill_color = get_color_for_course(raw_course_name) if (raw_course_name in valid_course_codes or raw_course_name.startswith("ELECTIVE")) else None
+            raw_course_name = (
+                raw_course_name.replace("T", "")
+                .replace("(", "")
+                .strip()
+                .upper()
+            )
+            fill_color = (
+                get_color_for_course(raw_course_name)
+                if (raw_course_name in valid_course_codes
+                    or raw_course_name.startswith("ELECTIVE"))
+                else None
+            )
+
             for cc_ in merge_cols:
                 cell_ref = ws.cell(r, cc_)
                 cell_ref.border = thin
-                cell_ref.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                cell_ref.alignment = Alignment(
+                    horizontal="center",
+                    vertical="center",
+                    wrap_text=True
+                )
                 cell_ref.font = Font(bold=True)
-                if fill_color: cell_ref.fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
+                if fill_color:
+                    cell_ref.fill = PatternFill(
+                        start_color=fill_color,
+                        end_color=fill_color,
+                        fill_type="solid"
+                    )
+
             c = merge_cols[-1] + 1
+
+    # auto column widths
     for col in ws.columns:
-        maxl = 0; cl = col[0].column_letter
+        maxl = 0
+        cl = col[0].column_letter
         for cell in col:
             v = cell.value
-            if v is None: continue
+            if v is None:
+                continue
             maxl = max(maxl, len(str(v)))
         ws.column_dimensions[cl].width = min(maxl + 2 if maxl else 8, 60)
 
@@ -664,7 +873,7 @@ def add_csv_legend_block(ws, csv_path, legend_title, room_prefix=None, elective_
                 
                 elective_room_map[sync_name] = chosen
 
-            elective_rooms.append(f"{chosen} (random)")
+            elective_rooms.append(f"{chosen}")
         else:
             elective_rooms.append("")
 
@@ -694,7 +903,8 @@ def add_csv_legend_block(ws, csv_path, legend_title, room_prefix=None, elective_
 
 def generate(courses, ws, label, seed, elective_sync,
              room_prefix=None, elective_room_map=None,
-             room_busy_global=None, hide_c004=False, year_tag=None):
+             room_busy_global=None, hide_c004=False,
+             year_tag=None, combined_sync=None,semester_half=None):
     if elective_room_map is None:
         elective_room_map = {}
     if valid(courses): return []
@@ -761,10 +971,24 @@ def generate(courses, ws, label, seed, elective_sync,
             for h, typ in [(L,"L"), (T,"T"), (P,"P")]:
                 attempts = 0
                 while h > 1e-9 and attempts < 400:
-                    if typ == "P":
-                        a = 2.0 if h >= 2 else (1.5 if h >= 1.5 else 1.0)
+                    # Enforce strict durations per type:
+                    # - Lecture (L) => always 1.5 hours
+                    # - Tutorial (T) => always 1.0 hour
+                    # - Practical/Lab (P) => prefer 2.0, else 1.5, else 1.0 (only if remaining h is smaller)
+                    if typ == "L":
+                        a = 1.5
+                    elif typ == "T":
+                        a = 1.0
+                    elif typ == "P":
+                        # For labs prefer 2.0 blocks; if remaining hours < 2, allow smaller lab chunk
+                        if h >= 2.0 - 1e-9:
+                            a = 2.0
+                        elif h >= 1.5 - 1e-9:
+                            a = 1.5
+                        else:
+                            a = 1.0
                     else:
-                        a = 1.5 if h >= 1.5 else 1.0
+                        a = 1.0
                     placed = False
                     sync_name = c.get("_sync_name", None)
 
@@ -818,7 +1042,7 @@ def generate(courses, ws, label, seed, elective_sync,
 
     combined_placed = assign_combined_precise_durations(
         tt, busy, rm, room_busy, labsd, course_usage, combined_core,
-        rr_state=rr_state, hide_c004=hide_c004, year_tag=year_tag
+        rr_state=rr_state, hide_c004=hide_c004,  combined_sync=combined_sync, year_tag=year_tag,semester_half=semester_half
     )
     regular_placed = place_course_list(regular_core, start_idx_ref)
 
@@ -843,18 +1067,20 @@ if __name__ == "__main__":
     sync_sem3 = {}
     sync_sem5 = {}
     sync_sem7 = {}
+    combined_sync_sem1 = {}
+    combined_sync_sem3 = {}
 
     ws1 = wb.active
     ws1.title = "CSE-I Timetable"
     cAf, cAs = split(coursesAI)
     cBf, cBs = split(coursesBI)
     
-    csea_block = generate(cAf, ws1, "CSEA I First Half", seed+0, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,hide_c004=True,year_tag=1)
-    csea_block2 = generate(cAs, ws1, "CSEA I Second Half", seed+1, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,hide_c004=True,year_tag=1)
+    csea_block = generate(cAf, ws1, "CSEA I First Half", seed+0, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,hide_c004=True,year_tag=1,combined_sync=combined_sync_sem1,semester_half=1)
+    csea_block2 = generate(cAs, ws1, "CSEA I Second Half", seed+1, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,hide_c004=True,year_tag=1,combined_sync=combined_sync_sem1,semester_half=2)
     add_csv_legend_block(ws1, "data/coursesCSEA-I.csv", "CSEA I", room_prefix="C1", elective_room_map=elective_room_map)
     
-    cseb_block = generate(cBf, ws1, "CSEB I First Half", seed+2, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,hide_c004=True,year_tag=1)
-    cseb_block2 = generate(cBs, ws1, "CSEB I Second Half", seed+3, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,hide_c004=True,year_tag=1)
+    cseb_block = generate(cBf, ws1, "CSEB I First Half", seed+2, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,hide_c004=True,year_tag=1,combined_sync=combined_sync_sem1,semester_half=1)
+    cseb_block2 = generate(cBs, ws1, "CSEB I Second Half", seed+3, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,hide_c004=True,year_tag=1,combined_sync=combined_sync_sem1,semester_half=2)
     add_csv_legend_block(ws1, "data/coursesCSEB-I.csv", "CSEB I", room_prefix="C1", elective_room_map=elective_room_map)
     
     combined_i_courses = (csea_block or []) + (csea_block2 or []) + (cseb_block or []) + (cseb_block2 or [])
@@ -863,8 +1089,8 @@ if __name__ == "__main__":
     # --- DSAI-I ---
     ws7 = wb.create_sheet("DSAI-I Timetable")
     d1f_i, d1s_i = split(coursesDSAI_I)
-    dsai1_block1 = generate(d1f_i, ws7, "DSAI-I First Half", seed+16, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=1)
-    dsai1_block2 = generate(d1s_i, ws7, "DSAI-I Second Half", seed+17, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=1)
+    dsai1_block1 = generate(d1f_i, ws7, "DSAI-I First Half", seed+16, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=1,combined_sync=combined_sync_sem1,semester_half=1)
+    dsai1_block2 = generate(d1s_i, ws7, "DSAI-I Second Half", seed+17, sync_sem1, room_prefix='C1', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=1,combined_sync=combined_sync_sem1,semester_half=2)
     add_csv_legend_block(ws7, "data/coursesDSAI-I.csv", "DSAI I", room_prefix="C1", elective_room_map=elective_room_map)
     combined_dsai1_courses = (dsai1_block1 or []) + (dsai1_block2 or [])
     merge_and_color(ws7, combined_dsai1_courses)
@@ -872,8 +1098,8 @@ if __name__ == "__main__":
     # --- ECE-I ---
     ws9 = wb.create_sheet("ECE-I Timetable")
     e1f_i, e1s_i = split(coursesECE_I)
-    ece1_block1 = generate(e1f_i, ws9, "ECE-I First Half", seed+20, sync_sem1, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=1)
-    ece1_block2 = generate(e1s_i, ws9, "ECE-I Second Half", seed+21, sync_sem1, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=1)
+    ece1_block1 = generate(e1f_i, ws9, "ECE-I First Half", seed+20, sync_sem1, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=1,combined_sync=combined_sync_sem1,semester_half=1)
+    ece1_block2 = generate(e1s_i, ws9, "ECE-I Second Half", seed+21, sync_sem1, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=1,combined_sync=combined_sync_sem1,semester_half=2)
     add_csv_legend_block(ws9, "data/coursesECE-I.csv", "ECE I", room_prefix="C4", elective_room_map=elective_room_map)
     combined_ece1_courses = (ece1_block1 or []) + (ece1_block2 or [])
     merge_and_color(ws9, combined_ece1_courses)
@@ -881,12 +1107,12 @@ if __name__ == "__main__":
     ws2 = wb.create_sheet("CSE-III Timetable")
     c1f, c1s = split(coursesA); c2f, c2s = split(coursesB)
     
-    csea3_block1 = generate(c1f, ws2, "CSEA III First Half", seed+4, sync_sem3, room_prefix='C2', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3)
-    csea3_block2 = generate(c1s, ws2, "CSEA III Second Half", seed+5, sync_sem3, room_prefix='C2', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3)
+    csea3_block1 = generate(c1f, ws2, "CSEA III First Half", seed+4, sync_sem3, room_prefix='C2', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3,combined_sync=combined_sync_sem3,semester_half=1)
+    csea3_block2 = generate(c1s, ws2, "CSEA III Second Half", seed+5, sync_sem3, room_prefix='C2', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3,combined_sync=combined_sync_sem3,semester_half=2)
     add_csv_legend_block(ws2, "data/coursesCSEA-III.csv", "CSEA III", room_prefix="C2", elective_room_map=elective_room_map)
     
-    cseb3_block1 = generate(c2f, ws2, "CSEB III First Half", seed+6, sync_sem3, room_prefix='C2', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3)
-    cseb3_block2 = generate(c2s, ws2, "CSEB III Second Half", seed+7, sync_sem3, room_prefix='C2', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3)
+    cseb3_block1 = generate(c2f, ws2, "CSEB III First Half", seed+6, sync_sem3, room_prefix='C2', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3,combined_sync=combined_sync_sem3,semester_half=1)
+    cseb3_block2 = generate(c2s, ws2, "CSEB III Second Half", seed+7, sync_sem3, room_prefix='C2', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3,combined_sync=combined_sync_sem3,semester_half=2)
     add_csv_legend_block(ws2, "data/coursesCSEB-III.csv", "CSEB III", room_prefix="C2", elective_room_map=elective_room_map)
     
     combined_iii_courses = (csea3_block1 or []) + (csea3_block2 or []) + (cseb3_block1 or []) + (cseb3_block2 or [])
@@ -895,8 +1121,8 @@ if __name__ == "__main__":
     # --- DSAI-III ---
     ws4 = wb.create_sheet("DSAI-III Timetable")
     d1f, d1s = split(coursesDSAI)
-    dsa_block1 = generate(d1f, ws4, "DSAI-III First Half", seed+10, sync_sem3, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3)
-    dsa_block2 = generate(d1s, ws4, "DSAI-III Second Half", seed+11, sync_sem3, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3)
+    dsa_block1 = generate(d1f, ws4, "DSAI-III First Half", seed+10, sync_sem3, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3,combined_sync=combined_sync_sem3,semester_half=1)
+    dsa_block2 = generate(d1s, ws4, "DSAI-III Second Half", seed+11, sync_sem3, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3,combined_sync=combined_sync_sem3,semester_half=2)
     add_csv_legend_block(ws4, "data/coursesDSAI-III.csv", "DSAI", room_prefix="C4", elective_room_map=elective_room_map)
     combined_dsa_courses = (dsa_block1 or []) + (dsa_block2 or [])
     merge_and_color(ws4, combined_dsa_courses)
@@ -904,8 +1130,8 @@ if __name__ == "__main__":
     # --- ECE-III ---
     ws5 = wb.create_sheet("ECE-III Timetable")
     e1f, e1s = split(coursesECE)
-    ece_block1 = generate(e1f, ws5, "ECE-III First Half", seed+12, sync_sem3, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3)
-    ece_block2 = generate(e1s, ws5, "ECE-III Second Half", seed+13, sync_sem3, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3)
+    ece_block1 = generate(e1f, ws5, "ECE-III First Half", seed+12, sync_sem3, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3,combined_sync=combined_sync_sem3,semester_half=1)
+    ece_block2 = generate(e1s, ws5, "ECE-III Second Half", seed+13, sync_sem3, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=3,combined_sync=combined_sync_sem3,semester_half=2)
     add_csv_legend_block(ws5, "data/coursesECE-III.csv", "ECE", room_prefix="C4", elective_room_map=elective_room_map)
     combined_ece_courses = (ece_block1 or []) + (ece_block2 or [])
     merge_and_color(ws5, combined_ece_courses)
@@ -913,8 +1139,8 @@ if __name__ == "__main__":
     # --- CSE-V ---
     ws3 = wb.create_sheet("CSE-V Timetable")
     c5f, c5s = split(coursesV)
-    c5_block1 = generate(c5f, ws3, "CSE-V First Half", seed+8, sync_sem5, room_prefix='C3', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=5)
-    c5_block2 = generate(c5s, ws3, "CSE-V Second Half", seed+9, sync_sem5, room_prefix='C3', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=5)
+    c5_block1 = generate(c5f, ws3, "CSE-V First Half", seed+8, sync_sem5, room_prefix='C3', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=5,semester_half=1)
+    c5_block2 = generate(c5s, ws3, "CSE-V Second Half", seed+9, sync_sem5, room_prefix='C3', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=5,semester_half=2)
     add_csv_legend_block(ws3, "data/coursesCSE-V.csv", "CSE V", room_prefix="C3", elective_room_map=elective_room_map)
     combined_v_courses = (c5_block1 or []) + (c5_block2 or [])
     merge_and_color(ws3, combined_v_courses)
@@ -922,8 +1148,8 @@ if __name__ == "__main__":
     # --- DSAI-V ---
     ws8 = wb.create_sheet("DSAI-V Timetable")
     d5f_v, d5s_v = split(coursesDSAI_V)
-    dsai5_block1 = generate(d5f_v, ws8, "DSAI-V First Half", seed+18, sync_sem5, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=5)
-    dsai5_block2 = generate(d5s_v, ws8, "DSAI-V Second Half", seed+19, sync_sem5, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=5)
+    dsai5_block1 = generate(d5f_v, ws8, "DSAI-V First Half", seed+18, sync_sem5, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=5,semester_half=1)
+    dsai5_block2 = generate(d5s_v, ws8, "DSAI-V Second Half", seed+19, sync_sem5, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=5,semester_half=2)
     add_csv_legend_block(ws8, "data/coursesDSAI-V.csv", "DSAI V", room_prefix="C4", elective_room_map=elective_room_map)
     combined_dsai5_courses = (dsai5_block1 or []) + (dsai5_block2 or [])
     merge_and_color(ws8, combined_dsai5_courses)
@@ -931,16 +1157,16 @@ if __name__ == "__main__":
     # --- ECE-V ---
     ws10 = wb.create_sheet("ECE-V Timetable")
     e5f_v, e5s_v = split(coursesECE_V)
-    ece5_block1 = generate(e5f_v, ws10, "ECE-V First Half", seed+22, sync_sem5, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=5)
-    ece5_block2 = generate(e5s_v, ws10, "ECE-V Second Half", seed+23, sync_sem5, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=5)
+    ece5_block1 = generate(e5f_v, ws10, "ECE-V First Half", seed+22, sync_sem5, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=5,semester_half=1)
+    ece5_block2 = generate(e5s_v, ws10, "ECE-V Second Half", seed+23, sync_sem5, room_prefix='C4', elective_room_map=elective_room_map, room_busy_global=global_room_busy,year_tag=5,semester_half=2)
     add_csv_legend_block(ws10, "data/coursesECE-V.csv", "ECE V", room_prefix="C4", elective_room_map=elective_room_map)
     combined_ece5_courses = (ece5_block1 or []) + (ece5_block2 or [])
     merge_and_color(ws10, combined_ece5_courses)
-    # --- DSAI 7th Sem ---
-    ws6 = wb.create_sheet("DSAI 7TH-SEM Timetable")
+    # --- Common 7th Sem ---
+    ws6 = wb.create_sheet("COMMON 7TH-SEM Timetable")
     s7f, s7s = split(coursesVII)
-    s7_block1 = generate(s7f, ws6, "DSAI 7TH-SEM First Half", seed+14, sync_sem7, room_prefix='C3', elective_room_map=elective_room_map, room_busy_global=global_room_busy, year_tag=7)
-    s7_block2 = generate(s7s, ws6, "DSAI 7TH-SEM Second Half", seed+15, sync_sem7, room_prefix='C3', elective_room_map=elective_room_map, room_busy_global=global_room_busy, year_tag=7)
+    s7_block1 = generate(s7f, ws6, "COMMON 7TH-SEM First Half", seed+14, sync_sem7, room_prefix='C3', elective_room_map=elective_room_map, room_busy_global=global_room_busy, year_tag=7, semester_half=1)
+    s7_block2 = generate(s7s, ws6, "COMMON 7TH-SEM Second Half", seed+15, sync_sem7, room_prefix='C3', elective_room_map=elective_room_map, room_busy_global=global_room_busy, year_tag=7, semester_half=2)
     add_csv_legend_block(ws6, "data/courses7.csv", "7TH SEM", room_prefix="C3", elective_room_map=elective_room_map)
     combined_7_courses = (s7_block1 or []) + (s7_block2 or [])
     merge_and_color(ws6, combined_7_courses)
